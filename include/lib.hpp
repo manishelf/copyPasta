@@ -10,10 +10,12 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <git2.h>
 #include <iostream>
 #include <iterator>
 #include <mutex>
 #include <queue>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <sys/wait.h>
@@ -21,7 +23,6 @@
 #include <tinydir.h>
 #include <tree_sitter/api.h>
 #include <vector>
-#include <set>
 
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
@@ -44,13 +45,13 @@ class ThreadPool {
   std::condition_variable enqueueCondition;
   std::mutex finishMutex;
   std::condition_variable finishCondition;
-  
+
   bool stop;
-  size_t maxCount;                    // std::thread::hardware_concurrency()
+  size_t maxCount;
   std::atomic<size_t> activeTasks{0}; // Tracks pending + running tasks
 
 public:
-  ThreadPool(size_t maxCount);
+  ThreadPool(size_t maxCount = std::thread::hardware_concurrency());
   ~ThreadPool();
 
   // pass in a anonymous class and the action in the constructor will be
@@ -62,13 +63,11 @@ public:
   // helper to block until all tasks are finished
   // main thread will yield until all threads are done
   void waitUntilFinished() {
-     //while (activeTasks > 0) {
-      //std::this_thread::yield();
+    // while (activeTasks > 0) {
+    // std::this_thread::yield();
     //}
     std::unique_lock<std::mutex> lock(finishMutex);
-    finishCondition.wait(lock, [this]{
-        return activeTasks.load() == 0;
-    }); 
+    finishCondition.wait(lock, [this] { return activeTasks.load() == 0; });
   }
 };
 
@@ -95,20 +94,21 @@ public:
 
   File(std::string path);
   File(tinydir_file file);
-  File(){};
+  File() {};
   ~File();
 
   void sync();
 
-  static bool deleteFile(File& target); // deletes entry file and commits
-  static int deleteDir(File& target); // deletes entry dir and commits returns number of children deleted
-  static bool rename(File& target, std::string name); // moves or renames
+  static bool deleteFile(File &target); // deletes entry file and commits
+  static int deleteDir(File &target);   // deletes entry dir and commits returns
+                                        // number of children deleted
+  static bool rename(File &target, std::string name); // moves or renames
 };
 
 struct FileSnapshot {
+  std::string cont;
   File file;
   size_t lastModified;
-  std::string cont;
   bool dirty;
 };
 
@@ -121,7 +121,9 @@ class FileReader {
 
   static const char *tsRead(void *payload, uint32_t byte_index, TSPoint point,
                             uint32_t *bytes_read);
+
   char *buf = nullptr;
+
 public:
   size_t level = 0;
   std::vector<size_t> rowOffsets;
@@ -133,8 +135,8 @@ public:
   FileReader(File file, size_t blockSize = 4096);
   FileReader(std::string filePath, size_t blockSize = 4096);
   FileReader(const FileSnapshot snap, size_t blockSize = 4096);
-  FileReader(const FileReader& copy);
-  FileReader(){};
+  FileReader(const FileReader &copy);
+  FileReader() {};
   ~FileReader();
 
   bool isValid() { return _isValid; };
@@ -163,7 +165,6 @@ public:
                                 size_t opt = PCRE2_CASELESS);
   std::vector<MatchResult> findWith(pcre2_code *re,
                                     size_t opt = PCRE2_CASELESS);
-
   TSPoint getPointFromByte(size_t byteOffset);
 
   const FileSnapshot snapshot();
@@ -248,24 +249,22 @@ public:
   FileWriter &append(std::string &cont);
   FileWriter &insert(size_t offset, std::string &newCont);
 
-  // overwrite 
+  // overwrite
   FileWriter &write(const std::string &content); // replace entire buf content
   FileWriter &write(size_t offset, char *newCont, size_t newContLen);
-  FileWriter &write(size_t offset, std::string& cont);
+  FileWriter &write(size_t offset, std::string &cont);
 
   FileWriter &deleteRow(size_t row);
   FileWriter &insertRow(size_t row, const std::string &line);
   FileWriter &deleteCont(size_t from, size_t to);
-  FileWriter &replaceAll(std::string pattern,
-                         std::string templateOrResult,
-                         size_t opt = PCRE2_SUBSTITUTE_GLOBAL | PCRE2_SUBSTITUTE_EXTENDED);
-  FileWriter &replace(std::string pattern,
-                      std::string templateOrResult,
-                      size_t nth_occ = 0,// 0 for first 1 for second and
-                                         //-1 for last, -2 for last second and so on
-                      size_t opt = PCRE2_SUBSTITUTE_GLOBAL | PCRE2_SUBSTITUTE_EXTENDED
-                      );  
-                                           
+  FileWriter &replaceAll(std::string pattern, std::string templateOrResult,
+                         size_t opt = PCRE2_SUBSTITUTE_GLOBAL |
+                                      PCRE2_SUBSTITUTE_EXTENDED);
+  FileWriter &
+  replace(std::string pattern, std::string templateOrResult,
+          size_t nth_occ = 0, // 0 for first 1 for second and
+                              //-1 for last, -2 for last second and so on
+          size_t opt = PCRE2_SUBSTITUTE_GLOBAL | PCRE2_SUBSTITUTE_EXTENDED);
 };
 
 class DirWalker {
@@ -276,6 +275,7 @@ public:
   std::string path;
   size_t level = 0;
   bool recursive = false;
+  bool inverted = false;
   bool includeDotDir = false;
   bool obeyGitIgnore = true;
   std::set<std::string> ignoring;
@@ -289,8 +289,8 @@ public:
     DONE
   };
   enum ACTION {
-    STOP = -2,     // stop walk in current dir
-    ABORT = -1,      // stop the walk altogether
+    STOP = -2,    // stop walk in current dir
+    ABORT = -1,   // stop the walk altogether
     CONTINUE = 0, // continue walk
     SKIP = 1,     // skip entering child dir
   };
@@ -317,20 +317,20 @@ private:
 
 // should be thread local
 class TSEngine {
-  const TSLanguage* lang;
-  TSParser* parser;
-  TSEngine(const TSLanguage* lang);
+  const TSLanguage *lang;
+  TSParser *parser;
+  TSEngine(const TSLanguage *lang);
   FileReader fileReader;
-public:
 
-  static TSEngine& instance(const TSLanguage* lang);
+public:
+  static TSEngine &instance(const TSLanguage *lang);
   ~TSEngine();
-  
-  void setReader(FileReader& fileReader); 
+
+  void setReader(FileReader &fileReader);
 
   // parse the content
   // return the tree?
-  // 
+  //
 };
 
 // ----------------------------------------------------------
@@ -344,15 +344,15 @@ File::File(std::string path) {
   dir_entry = fs::directory_entry(path);
   this->pathStr = path;
   if (dir_entry.exists()) {
-    this->path = dir_entry.path();
+    this->path = fs::absolute(dir_entry.path().lexically_normal());
     name = this->path.filename();
     ext = this->path.extension();
     isDir = dir_entry.is_directory();
     isReg = dir_entry.is_regular_file();
     status = dir_entry.status();
-    if(!isDir){
+    if (isReg) {
       size = dir_entry.file_size();
-    }else{
+    } else {
       size = 0;
     }
     isValid = true;
@@ -369,14 +369,14 @@ File::File(tinydir_file file) {
   isReg = file.is_reg == 1;
 
   dir_entry = fs::directory_entry(file.path);
-  path = dir_entry.path();
   status = dir_entry.status();
-  if(!isDir){
-      size = dir_entry.file_size();
-    }else{
-      size = 0;
-    }
   isValid = dir_entry.exists();
+  path = fs::absolute(dir_entry.path().lexically_normal());
+  if (isReg) {
+    size = dir_entry.file_size();
+  } else {
+    size = 0;
+  }
 };
 
 void File::sync() {
@@ -388,18 +388,20 @@ void File::sync() {
   path = dir_entry.path();
 };
 
-bool File::deleteFile(File& target){
-  if(target.isDir) return false;
+bool File::deleteFile(File &target) {
+  if (target.isDir)
+    return false;
   return fs::remove(target.path);
 };
 
-int File::deleteDir(File& target){
-  if(!target.isDir) return -1;
+int File::deleteDir(File &target) {
+  if (!target.isDir)
+    return -1;
   return fs::remove_all(target.path);
 };
 
-bool File::rename(File& file, std::string name){
-  fs::rename(file.pathStr, name); 
+bool File::rename(File &file, std::string name) {
+  fs::rename(file.pathStr, name);
   file.path = fs::path(name);
   file.pathStr = name;
   file.dir_entry = fs::directory_entry(file.path);
@@ -443,33 +445,32 @@ FileReader::FileReader(std::string filePath, size_t blockSize)
   snapShotMode = false;
 };
 
-FileReader::FileReader(const FileSnapshot snap, size_t blockSize){
+FileReader::FileReader(const FileSnapshot snap, size_t blockSize) {
   snapShotMode = true;
-  file = snap.file;
   buf = new char[snap.cont.length()];
   std::memcpy(buf, snap.cont.data(), snap.cont.length());
   _isValid = true;
   defaultBlockSize = blockSize;
 };
 
-FileReader::FileReader(const FileReader& copy){
+FileReader::FileReader(const FileReader &copy) {
   this->iFileStream = std::ifstream(copy.file.pathStr);
   this->file = copy.file;
   this->_isValid = copy._isValid;
   this->pos = copy.pos;
   this->buf = new char[copy.bufSize];
   memcpy(this->buf, copy.buf, copy.bufSize);
-  this->level =  copy.level;
+  this->level = copy.level;
   this->rowOffsets = copy.rowOffsets;
   this->bufStart = copy.bufStart;
   this->bufSize = copy.bufSize;
   this->defaultBlockSize = copy.defaultBlockSize;
   this->readReverse = copy.readReverse;
-  this->snapShotMode = copy.snapShotMode; 
+  this->snapShotMode = copy.snapShotMode;
 }
 
 void FileReader::readFileMetadata() {
-  if (iFileStream.is_open() && file.isValid && file.size != 0 ) {
+  if (iFileStream.is_open() && file.isValid && file.size != 0) {
 
     bufSize = file.size;
     bufStart = 0;
@@ -496,7 +497,7 @@ FileReader::block FileReader::sync() {
   if (!_isValid)
     return {nullptr, 0};
 
-  if(snapShotMode)
+  if (snapShotMode)
     return {buf, bufSize};
 
   file.sync();
@@ -540,7 +541,7 @@ FileReader::block FileReader::load(size_t from, size_t to) {
   if (!_isValid)
     return {nullptr, 0};
 
-  if(snapShotMode)
+  if (snapShotMode)
     return {buf, bufSize};
 
   if (from > file.size || to > file.size || to == 0)
@@ -699,15 +700,15 @@ std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
   int rc = 0;
   PCRE2_SIZE startOffset = 0;
   while (true) {
-    rc = pcre2_match(re, subject, subject_length, startOffset, opt,
-                           match_data, NULL);
+    rc = pcre2_match(re, subject, subject_length, startOffset, opt, match_data,
+                     NULL);
 
     if (rc == PCRE2_ERROR_NOMATCH)
-        break;
+      break;
 
-    if (rc < 0){
-        pcre2_match_data_free(match_data);
-        throw std::runtime_error("PCRE2 match error");
+    if (rc < 0) {
+      pcre2_match_data_free(match_data);
+      throw std::runtime_error("PCRE2 match error");
     }
     ovector = pcre2_get_ovector_pointer(match_data);
 
@@ -739,10 +740,10 @@ std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
 
     startOffset = ovector[1];
     if (ovector[0] == ovector[1]) { // 0 length matches can exist
-        if (startOffset < subject_length)
-            startOffset++;
-        else
-            break;
+      if (startOffset < subject_length)
+        startOffset++;
+      else
+        break;
     }
 
     if (startOffset >= subject_length)
@@ -759,7 +760,7 @@ std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
 TSPoint FileReader::getPointFromByte(size_t byteOffset) {
 
   if (rowOffsets.empty())
-        return {0, static_cast<uint32_t>(byteOffset)};
+    return {0, static_cast<uint32_t>(byteOffset)};
 
   // Find the first row offset that is GREATER than our byte
   auto it = std::upper_bound(rowOffsets.begin(), rowOffsets.end(), byteOffset);
@@ -778,8 +779,9 @@ TSPoint FileReader::getPointFromByte(size_t byteOffset) {
 }
 
 const FileSnapshot FileReader::snapshot() {
-  
-  if(!file.isValid) return FileSnapshot();
+
+  if (!file.isValid)
+    return FileSnapshot();
 
   file.sync();
   sync();
@@ -975,7 +977,7 @@ FileWriter &FileWriter::write(size_t offset, char *newCont, size_t newContLen) {
   modifySnap
 };
 
-FileWriter &FileWriter::write(size_t offset, std::string& cont){
+FileWriter &FileWriter::write(size_t offset, std::string &cont) {
   snap.cont.erase(offset, cont.length());
   snap.cont.insert(offset, cont);
   modifySnap
@@ -1026,44 +1028,41 @@ FileWriter &FileWriter::replaceAll(std::string pattern,
 
   pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
 
-  PCRE2_SIZE outLength = snap.cont.length()*2;
+  PCRE2_SIZE outLength = snap.cont.length() * 2;
+
+  if (outLength == 0) {
+    return *this;
+  }
+
   std::vector<PCRE2_UCHAR> buffer;
   int rc = -1;
 substitute:
   buffer.resize(outLength);
   // expands the template with captures and replcaes match
   rc = pcre2_substitute(
-                          re,
-                          (PCRE2_SPTR)snap.cont.c_str(),
-                          snap.cont.length(),
-                          0,
-                          opt,
-                          nullptr,
-                          nullptr,
-                          (PCRE2_SPTR)templateOrResult.c_str(),
-                          templateOrResult.length(),
-                          (PCRE2_UCHAR *)buffer.data(),
-                          &outLength);
+      re, (PCRE2_SPTR)snap.cont.c_str(), snap.cont.length(), 0, opt, nullptr,
+      nullptr, (PCRE2_SPTR)templateOrResult.c_str(), templateOrResult.length(),
+      (PCRE2_UCHAR *)buffer.data(), &outLength);
 
   if (rc == PCRE2_ERROR_NOMEMORY) {
+    std::cout << "PCR2_ERROR_NOMEMORY - " << outLength << std::endl;
     goto substitute;
   }
 
   pcre2_code_free(re);
-  
+
   if (rc < 0) {
     throw std::runtime_error("PCRE2 substitution failed");
   }
 
-  snap.cont.assign(reinterpret_cast<char*>(buffer.data()), outLength);
+  snap.cont.assign(reinterpret_cast<char *>(buffer.data()), outLength);
 
   modifySnap
 };
 
-FileWriter& FileWriter::replace(std::string pattern,
-                                std::string templateOrResult,
-                                size_t nth,
-                                size_t opt){
+FileWriter &FileWriter::replace(std::string pattern,
+                                std::string templateOrResult, size_t nth,
+                                size_t opt) {
   FileReader snapReader(snap);
   auto results = snapReader.find(pattern, true);
 
@@ -1072,47 +1071,43 @@ FileWriter& FileWriter::replace(std::string pattern,
   }
 
   // (a%b + b)%b for -10 % 100 = 90 && 10 % 100 = 10
-  nth = (nth % results.size() + results.size()) % results.size(); 
-  auto target = results[nth]; 
+  nth = (nth % results.size() + results.size()) % results.size();
+  auto target = results[nth];
 
   size_t start_offset = target.match.start_byte;
   size_t end_offset = target.match.end_byte;
-  
+
   int errornumber;
   PCRE2_SIZE erroroffset;
 
   pcre2_code *re = pcre2_compile((PCRE2_SPTR)pattern.c_str(), pattern.length(),
-                                 0, 
-                                 &errornumber, &erroroffset, nullptr);
+                                 0, &errornumber, &erroroffset, nullptr);
 
   if (!re) {
     throw std::runtime_error("PCRE2 compilation failed at offset " +
                              std::to_string(erroroffset));
   }
 
-
   pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
 
   PCRE2_SIZE outLength = templateOrResult.length() * 2;
+
+  if (outLength == 0) {
+    return *this;
+  }
+
   std::vector<PCRE2_UCHAR> buffer;
   int rc = -1;
 substitute:
   buffer.resize(outLength);
-  rc = pcre2_substitute(
-                          re,
-                          (PCRE2_SPTR)(snap.cont.c_str()+start_offset),
-                          end_offset - start_offset,
-                          0,
-                          opt,
-                          nullptr,
-                          nullptr,
-                          (PCRE2_SPTR)templateOrResult.c_str(),
-                          templateOrResult.length(),
-                          (PCRE2_UCHAR *)buffer.data(),
-                          &outLength);
-
+  rc = pcre2_substitute(re, (PCRE2_SPTR)(snap.cont.c_str() + start_offset),
+                        end_offset - start_offset, 0, opt, nullptr, nullptr,
+                        (PCRE2_SPTR)templateOrResult.c_str(),
+                        templateOrResult.length(), (PCRE2_UCHAR *)buffer.data(),
+                        &outLength);
 
   if (rc == PCRE2_ERROR_NOMEMORY) {
+    std::cout << "PCR2_ERROR_NOMEMORY - " << outLength << std::endl;
     goto substitute;
   }
 
@@ -1122,7 +1117,8 @@ substitute:
     throw std::runtime_error("PCRE2 substitution failed");
   }
 
-  return write(start_offset, reinterpret_cast<char*>(buffer.data()), outLength);
+  return write(start_offset, reinterpret_cast<char *>(buffer.data()),
+               outLength);
 };
 
 // DirWalker
@@ -1133,13 +1129,7 @@ DirWalker::DirWalker(tinydir_dir dir) {
 
 DirWalker::DirWalker(std::string dir) {
   path = dir;
-  if (tinydir_open_sorted(&_dir, dir.c_str()) != -1) {
-    _isValid = true;
-    tinydir_close(&_dir);
-  } else {
-    _isValid = false;
-    Utils::process_tinydir_err("Opening directory: " + path);
-  }
+  _isValid = fs::exists(dir);
 };
 
 DirWalker::~DirWalker() {};
@@ -1171,18 +1161,30 @@ std::vector<File> DirWalker::allChildren() {
 }
 
 DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload) {
+  git_repository *repo = NULL;
+
+  if (git_repository_open_ext(&repo, path.c_str(),
+                              GIT_REPOSITORY_OPEN_NO_SEARCH, NULL) != GIT_ENOTFOUND) {
+    std::cout << "found repository in path " << path << std::endl;
+  }
 
   if (!_isValid)
     return FAILED;
+
   std::vector<File> myChildren = allChildren();
 
-  for (File& file : myChildren) {
+  for (int i = 0; i < myChildren.size(); i++) {
+    File &file = myChildren[i];
 
-    ACTION actRes = ACTION::CONTINUE;
-
-    if (!(file.name == "." || file.name == "..") || includeDotDir) {
-      actRes = action(STATUS::OPENED, file, payload);
+    if (obeyGitIgnore) {
+      int ignored;
+      git_ignore_path_is_ignored(&ignored, repo, file.path.c_str());
+      if (ignored) {
+        continue;
+      }
     }
+
+    ACTION actRes = action(STATUS::OPENED, file, payload);
 
     if (actRes == ACTION::SKIP) {
       continue;
@@ -1190,19 +1192,43 @@ DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload) {
       return STATUS::STOPPED;
     } else if (actRes == ACTION::ABORT) {
       return STATUS::ABORTED;
-    } else if (actRes == ACTION::CONTINUE && file.isDir && recursive &&
-               !(file.name == "." || file.name == "..")) {
-      DirWalker child(file.path);
-      child.recursive = recursive;
+    } else if (actRes == ACTION::CONTINUE &&
+               !((file.name == ".") || (file.name == "..")) && file.isDir &&
+               recursive && !inverted) {
+
+      DirWalker child(file.pathStr);
       child.level = level + 1;
+      child.recursive = recursive;
+      child.obeyGitIgnore = obeyGitIgnore;
+      child.inverted = inverted;
       STATUS res = child.walk(action, payload);
+
       if (res == STATUS::ABORTED) {
+        //  git_repository_free(repo);
         return res;
       } else if (res == STATUS::FAILED) {
         actRes = action(STATUS::FAILED, file, payload);
       }
     }
+
+    if (inverted && i == myChildren.size() - 1) {
+      fs::path parent = fs::absolute(path).parent_path();
+      if (path == ".")
+        parent = parent.parent_path();
+      if (parent != "/") {
+        DirWalker child(parent.string());
+        child.level = level - 1;
+        child.recursive = false;
+        child.obeyGitIgnore = obeyGitIgnore;
+        child.inverted = true;
+
+        //    git_repository_free(repo);
+        return child.walk(action, payload);
+      }
+    }
   }
+
+  // git_repository_free(repo);
   return STATUS::DONE;
 };
 
@@ -1217,16 +1243,14 @@ void DirWalker::walk(ThreadPool &pool, WalkAction_t action,
                      void *payload) {
 
   std::vector<File> myChildren = allChildren();
-  for (File& file : myChildren) {
 
+  for (int i = 0; i < myChildren.size(); i++) {
+    File &file = myChildren[i];
     // If any thread previously returned ABORT, quit now
     if (abortSignal->load())
       return;
 
     std::string fileName = std::string(file.name);
-
-    if (fileName == "." || fileName == "..")
-      continue;
 
     ACTION actRes = action(STATUS::QUEUING, file, payload);
 
@@ -1239,10 +1263,27 @@ void DirWalker::walk(ThreadPool &pool, WalkAction_t action,
       return;
     }
 
-    if (file.isDir && recursive) {
+    if (!((file.name == ".") || (file.name == "..")) && file.isDir &&
+        recursive && !inverted) {
       DirWalker child(file.path);
       child.recursive = recursive;
+      child.obeyGitIgnore = obeyGitIgnore;
+      child.inverted = inverted;
+
       child.walk(pool, action, abortSignal, payload);
+    } else if (inverted && i == myChildren.size() - 1) {
+      fs::path parent = fs::absolute(path).parent_path();
+      if (path == ".")
+        parent = parent.parent_path();
+      if (parent != "/") {
+        DirWalker child(parent.string());
+        child.level = level - 1;
+        child.recursive = false;
+        child.obeyGitIgnore = obeyGitIgnore;
+        child.inverted = true;
+
+        child.walk(action, payload);
+      }
     } else {
 
       // create a anonlymous class that has action and file in constructor
@@ -1264,9 +1305,11 @@ void DirWalker::walk(ThreadPool &pool, WalkAction_t action,
 ThreadPool::ThreadPool(size_t maxCount) {
   this->maxCount = maxCount;
   stop = false;
+  std::cout << maxCount << "n threads" << std::endl;
   for (size_t i = 0; i < maxCount; ++i) {
+
     workers.emplace_back([this] {
-        // constructor of Thread callable
+      // constructor of Thread callable
       while (true) {
         std::function<void()> job;
         {
@@ -1278,10 +1321,10 @@ ThreadPool::ThreadPool(size_t maxCount) {
           job = std::move(task.front());
           task.pop();
         }
-        job();         // Execute the action
-        if(activeTasks.fetch_sub(1) == 1){
+        job(); // Execute the action
+        std::cout << activeTasks << " - Task" << std::endl;
+        if (activeTasks.fetch_sub(1) == 1) {
           // this was the last job
-          std::unique_lock<std::mutex> lock(finishMutex);
           finishCondition.notify_all();
         }
       }
@@ -1303,31 +1346,28 @@ template <class F> void ThreadPool::enqueue(F &&f) {
   {
     std::unique_lock<std::mutex> lock(queueMutex);
     activeTasks++;
+    std::cout << activeTasks << " + Task" << std::endl;
     task.emplace(std::forward<F>(f));
   }
   enqueueCondition.notify_one();
 }
 
-
 // TSEngine
-TSEngine::TSEngine(const TSLanguage* lang){
-    this->lang = lang;
-    TSParser *parser = ts_parser_new();
-    ts_parser_set_language(parser, lang);
-    this->parser = parser;
+TSEngine::TSEngine(const TSLanguage *lang) {
+  this->lang = lang;
+  TSParser *parser = ts_parser_new();
+  ts_parser_set_language(parser, lang);
+  this->parser = parser;
 };
 
-TSEngine::~TSEngine(){
-  ts_parser_delete(this->parser);
-};
+TSEngine::~TSEngine() { ts_parser_delete(this->parser); };
 
-TSEngine& TSEngine::instance(const TSLanguage *lang){
+TSEngine &TSEngine::instance(const TSLanguage *lang) {
   thread_local TSEngine instance = TSEngine(lang);
   return instance;
 };
 
-void TSEngine::setReader(FileReader& fileReader){
-};
+void TSEngine::setReader(FileReader &fileReader) {};
 
 // Utils
 void Utils::process_tinydir_err(const std::string &context) {

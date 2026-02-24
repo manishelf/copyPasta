@@ -38,7 +38,7 @@ add_compile_options(
 # exec
 
 add_executable(
-  ctrl_c_ctrl_v_3000 
+  copyPasta 
   main.cpp
 )
 
@@ -49,13 +49,13 @@ add_subdirectory(deps/pcre2)
 add_subdirectory(deps/tree-sitter)
 add_subdirectory(deps/tree-sitter-parsers/tree-sitter-java)
 
-add_dependencies(ctrl_c_ctrl_v_3000 libgit2 pcre2-8  tree-sitter tree-sitter-java)
+add_dependencies(copyPasta libgit2 pcre2-8  tree-sitter tree-sitter-java)
 
 find_package(Threads REQUIRED)
 
 # include
 
-target_include_directories(ctrl_c_ctrl_v_3000 PUBLIC
+target_include_directories(copyPasta PUBLIC
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/deps/tinydir
     ${CMAKE_SOURCE_DIR}/deps/libgit2/include
@@ -66,7 +66,7 @@ target_include_directories(ctrl_c_ctrl_v_3000 PUBLIC
 
 # Link
 
-target_link_libraries(ctrl_c_ctrl_v_3000 PUBLIC
+target_link_libraries(copyPasta PUBLIC
   libgit2 libgit2package
   pcre2-8
   tree-sitter
