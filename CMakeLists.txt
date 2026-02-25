@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(CtrlC_CtrlV_3000 VERSION 1.0 LANGUAGES C CXX)
+project(copyPasta VERSION 1.0 LANGUAGES C CXX)
 
 
 # set
@@ -57,7 +57,6 @@ find_package(Threads REQUIRED)
 
 target_include_directories(copyPasta PUBLIC
     ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/deps/tinydir
     ${CMAKE_SOURCE_DIR}/deps/libgit2/include
     ${CMAKE_SOURCE_DIR}/deps/pcre2/src
     ${CMAKE_SOURCE_DIR}/deps/tree-sitter/lib/include

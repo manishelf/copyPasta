@@ -6,10 +6,6 @@
 	path = deps/tree-sitter-parsers/tree-sitter-java
 	url = https://github.com/tree-sitter/tree-sitter-java
 	shallow = true
-[submodule "tinydir"]
-	path = deps/tinydir
-	url = https://github.com/cxong/tinydir
-	shallow = true
 [submodule "samples/qtodo-spring-backend"]
 	path = samples/qtodo-spring-backend
 	url = https://github.com/manishelf/qtodo-spring-backend

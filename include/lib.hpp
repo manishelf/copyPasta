@@ -20,7 +20,7 @@
 #include <string>
 #include <sys/wait.h>
 #include <thread>
-#include <tinydir.h>
+//#include <tinydir.h>
 #include <tree_sitter/api.h>
 #include <vector>
 
@@ -84,16 +84,8 @@ public:
   fs::file_status status;
   fs::directory_entry dir_entry;
 
-#ifndef _MSC_VER
-#ifdef __MINGW32__
-  struct _stat _s;
-#else
-  struct stat _s;
-#endif
-#endif
-
   File(std::string path);
-  File(tinydir_file file);
+  File(fs::directory_entry entry);
   File() {};
   ~File();
 
@@ -268,7 +260,6 @@ public:
 };
 
 class DirWalker {
-  tinydir_dir _dir;
   bool _isValid;
 
 public:
@@ -295,7 +286,6 @@ public:
     SKIP = 1,     // skip entering child dir
   };
 
-  DirWalker(tinydir_dir dir);
   DirWalker(std::string dir);
 
   bool isValid() { return _isValid; }
@@ -361,21 +351,24 @@ File::File(std::string path) {
   }
 };
 
-File::File(tinydir_file file) {
-  pathStr = std::string(file.path);
-  name = std::string(file.name);
-  ext = std::string(file.extension);
-  isDir = file.is_dir == 1;
-  isReg = file.is_reg == 1;
-
-  dir_entry = fs::directory_entry(file.path);
-  status = dir_entry.status();
-  isValid = dir_entry.exists();
-  path = fs::absolute(dir_entry.path().lexically_normal());
-  if (isReg) {
-    size = dir_entry.file_size();
+File::File(fs::directory_entry entry) {
+  dir_entry = entry;
+  this->pathStr = entry.path();
+  if (dir_entry.exists()) {
+    this->path = fs::absolute(dir_entry.path().lexically_normal());
+    name = this->path.filename();
+    ext = this->path.extension();
+    isDir = dir_entry.is_directory();
+    isReg = dir_entry.is_regular_file();
+    status = dir_entry.status();
+    if (isReg) {
+      size = dir_entry.file_size();
+    } else {
+      size = 0;
+    }
+    isValid = true;
   } else {
-    size = 0;
+    isValid = false;
   }
 };
 
@@ -1122,11 +1115,6 @@ substitute:
 };
 
 // DirWalker
-DirWalker::DirWalker(tinydir_dir dir) {
-  _dir = dir;
-  path = std::string(dir.path);
-};
-
 DirWalker::DirWalker(std::string dir) {
   path = dir;
   _isValid = fs::exists(dir);
@@ -1134,31 +1122,6 @@ DirWalker::DirWalker(std::string dir) {
 
 DirWalker::~DirWalker() {};
 
-std::vector<File> DirWalker::allChildren() {
-  std::vector<File> myChildren;
-
-  if (!_isValid)
-    return myChildren;
-  if (tinydir_open_sorted(&_dir, path.c_str()) == -1) {
-    Utils::process_tinydir_err("Opening directory: " + path);
-    return myChildren;
-  }
-
-  for (size_t i = 0; i < _dir.n_files; i++) {
-    tinydir_file f;
-    int res = tinydir_readfile_n(&_dir, &f, i);
-    if (res != -1) {
-      File file(f);
-      myChildren.push_back(file);
-    } else {
-      Utils::process_tinydir_err("Reading file at index " + std::to_string(i) +
-                                 " file - " + f.path);
-    }
-  }
-
-  tinydir_close(&_dir);
-  return myChildren;
-}
 
 DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload) {
   git_repository *repo = NULL;
@@ -1171,10 +1134,13 @@ DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload) {
   if (!_isValid)
     return FAILED;
 
-  std::vector<File> myChildren = allChildren();
+  std::vector<fs::directory_entry> entries(
+    fs::directory_iterator(this->path), // begin it
+    fs::directory_iterator() //end it
+  );
 
-  for (int i = 0; i < myChildren.size(); i++) {
-    File &file = myChildren[i];
+  for (size_t i = 0; i < entries.size(); i++) {
+    File file(entries[i]);
 
     if (obeyGitIgnore) {
       int ignored;
@@ -1191,6 +1157,7 @@ DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload) {
     } else if (actRes == ACTION::STOP) {
       return STATUS::STOPPED;
     } else if (actRes == ACTION::ABORT) {
+      git_repository_free(repo);
       return STATUS::ABORTED;
     } else if (actRes == ACTION::CONTINUE &&
                !((file.name == ".") || (file.name == "..")) && file.isDir &&
@@ -1204,14 +1171,14 @@ DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload) {
       STATUS res = child.walk(action, payload);
 
       if (res == STATUS::ABORTED) {
-        //  git_repository_free(repo);
+        git_repository_free(repo);
         return res;
       } else if (res == STATUS::FAILED) {
         actRes = action(STATUS::FAILED, file, payload);
       }
     }
 
-    if (inverted && i == myChildren.size() - 1) {
+    if (inverted && i == entries.size() - 1) {
       fs::path parent = fs::absolute(path).parent_path();
       if (path == ".")
         parent = parent.parent_path();
@@ -1222,13 +1189,13 @@ DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload) {
         child.obeyGitIgnore = obeyGitIgnore;
         child.inverted = true;
 
-        //    git_repository_free(repo);
+        git_repository_free(repo);
         return child.walk(action, payload);
       }
     }
   }
 
-  // git_repository_free(repo);
+  git_repository_free(repo);
   return STATUS::DONE;
 };
 
@@ -1241,25 +1208,44 @@ void DirWalker::walk(ThreadPool &pool, WalkAction_t action, void *payload) {
 void DirWalker::walk(ThreadPool &pool, WalkAction_t action,
                      std::shared_ptr<std::atomic<bool>> abortSignal,
                      void *payload) {
+  git_repository *repo = NULL;
 
-  std::vector<File> myChildren = allChildren();
+  if (git_repository_open_ext(&repo, path.c_str(),
+                              GIT_REPOSITORY_OPEN_NO_SEARCH, NULL) != GIT_ENOTFOUND) {
+    std::cout << "found repository in path " << path << std::endl;
+  }
 
-  for (int i = 0; i < myChildren.size(); i++) {
-    File &file = myChildren[i];
+std::vector<fs::directory_entry> entries(
+    fs::directory_iterator(this->path),
+    fs::directory_iterator()
+);
+
+  for (int i = 0; i < entries.size(); i++) {
+    File file(entries[i]);
     // If any thread previously returned ABORT, quit now
-    if (abortSignal->load())
+    if (abortSignal->load()){
+      git_repository_free(repo);
       return;
-
-    std::string fileName = std::string(file.name);
+    }
+   if (obeyGitIgnore) {
+      int ignored;
+      git_ignore_path_is_ignored(&ignored, repo, file.path.c_str());
+      if (ignored) {
+        continue;
+      }
+    }
 
     ACTION actRes = action(STATUS::QUEUING, file, payload);
 
-    if (actRes == ACTION::STOP)
+    if (actRes == ACTION::STOP){
+      git_repository_free(repo);
       return;
+    }
     if (actRes == ACTION::SKIP)
       continue;
     if (actRes == ACTION::ABORT) {
       abortSignal->store(true);
+      git_repository_free(repo);
       return;
     }
 
@@ -1271,7 +1257,7 @@ void DirWalker::walk(ThreadPool &pool, WalkAction_t action,
       child.inverted = inverted;
 
       child.walk(pool, action, abortSignal, payload);
-    } else if (inverted && i == myChildren.size() - 1) {
+    } else if (inverted && i == entries.size() - 1) {
       fs::path parent = fs::absolute(path).parent_path();
       if (path == ".")
         parent = parent.parent_path();
