@@ -1,6 +1,7 @@
-#ifndef LIB_H
-#define LIB_H
+#ifndef LIB_H_
+#define LIB_H_
 
+#include "git2/types.h"
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -18,11 +19,12 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <sys/wait.h>
 #include <thread>
-//#include <tinydir.h>
 #include <tree_sitter/api.h>
 #include <vector>
+#include <assert.h>
 
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
@@ -32,11 +34,6 @@ namespace fs = std::filesystem;
 // ----------------------------------------------------------
 // API
 // ----------------------------------------------------------
-
-class Utils {
-public:
-  static void process_tinydir_err(const std::string &context);
-};
 
 class ThreadPool {
   std::vector<std::thread> workers;
@@ -86,7 +83,7 @@ public:
 
   File(std::string path);
   File(fs::directory_entry entry);
-  File() {};
+  File();
   ~File();
 
   void sync();
@@ -142,6 +139,7 @@ public:
   block sync();
   block load(size_t from, size_t to);
   std::string_view get(size_t from, size_t to);
+  std::string_view getLine(size_t row);
   void reset();
   block readBlockAt(size_t pos);
   block next();
@@ -301,34 +299,51 @@ public:
   void walk(ThreadPool &pool, WalkAction_t action, void *payload = nullptr);
 
 private:
-  void walk(ThreadPool &pool, WalkAction_t action,
+  STATUS walk(git_repository* repo, WalkAction_t action, void *payload = nullptr);
+
+  void walk(git_repository* repo, ThreadPool &pool, WalkAction_t action,
             std::shared_ptr<std::atomic<bool>> globalAbort, void *payload);
 };
 
-// should be thread local
+class TSEngine;
+
+class CSTTree {
+private:
+  TSTree *tree;
+  std::string_view source;
+
+public:
+  CSTTree(TSTree *tree, std::string_view source);
+  ~CSTTree();
+
+  std::string sTree();
+  std::string asQuery();
+  void getQueryForNode(TSNode node, std::string &query, size_t level = 0);
+
+   std::vector<TSQueryMatch> find(TSQuery* query);
+};
+
 class TSEngine {
   const TSLanguage *lang;
   TSParser *parser;
-  TSEngine(const TSLanguage *lang);
-  FileReader fileReader;
 
 public:
-  static TSEngine &instance(const TSLanguage *lang);
+  TSEngine(const TSLanguage *lang);
   ~TSEngine();
-
-  void setReader(FileReader &fileReader);
-
-  // parse the content
-  // return the tree?
-  //
+  const CSTTree parse(std::string_view source);
+  const CSTTree parse(FileReader &reader);
+  TSQuery* queryNew(std::string& queryExpr); // free with ts_query_delete
+  static TSQuery* queryNew(const TSLanguage* lang, std::string& queryExpr); // free with ts_query_delete
 };
+
+#endif // LIB_H_
 
 // ----------------------------------------------------------
 // IMPL
 // ----------------------------------------------------------
-#define LIB_IMPLEMENTATION
 
-#ifdef LIB_IMPLEMENTATION
+#ifndef LIB_IMPLEMENTATION
+#define LIB_IMPLEMENTATION
 
 File::File(std::string path) {
   dir_entry = fs::directory_entry(path);
@@ -371,6 +386,11 @@ File::File(fs::directory_entry entry) {
     isValid = false;
   }
 };
+
+File::File() {
+  size = 0;
+  isValid = false;
+}
 
 void File::sync() {
   dir_entry.refresh();
@@ -441,6 +461,9 @@ FileReader::FileReader(std::string filePath, size_t blockSize)
 FileReader::FileReader(const FileSnapshot snap, size_t blockSize) {
   snapShotMode = true;
   buf = new char[snap.cont.length()];
+  bufStart = 0;
+  bufSize = snap.cont.length();
+  file = snap.file;
   std::memcpy(buf, snap.cont.data(), snap.cont.length());
   _isValid = true;
   defaultBlockSize = blockSize;
@@ -517,7 +540,7 @@ std::string_view FileReader::get(size_t from, size_t to) {
   if (!_isValid)
     return {};
 
-  if (from > file.size || to > file.size)
+  if (file.isValid && (from > file.size || to > file.size))
     return {};
 
   size_t length = to - from;
@@ -526,9 +549,12 @@ std::string_view FileReader::get(size_t from, size_t to) {
       (to < file.size && to > bufSize + bufStart))
     if (load(from, to).cont == nullptr)
       return {};
-
   return std::string_view(&buf[from - bufStart], length);
 };
+
+std::string_view FileReader::getLine(size_t row) {
+  return get(rowOffsets[row], rowOffsets[row + 1]);
+}
 
 FileReader::block FileReader::load(size_t from, size_t to) {
   if (!_isValid)
@@ -1122,27 +1148,36 @@ DirWalker::DirWalker(std::string dir) {
 
 DirWalker::~DirWalker() {};
 
-
-DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload) {
+DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload){
   git_repository *repo = NULL;
 
   if (git_repository_open_ext(&repo, path.c_str(),
-                              GIT_REPOSITORY_OPEN_NO_SEARCH, NULL) != GIT_ENOTFOUND) {
+                              GIT_REPOSITORY_OPEN_NO_SEARCH,
+                              NULL) != GIT_ENOTFOUND) {
     std::cout << "found repository in path " << path << std::endl;
   }
+  auto res = walk(repo, action, payload);
+  git_repository_free(repo);
+  return res;
+};
+
+DirWalker::STATUS DirWalker::walk(git_repository* repo, WalkAction_t action, void *payload) {
 
   if (!_isValid)
     return FAILED;
 
   std::vector<fs::directory_entry> entries(
-    fs::directory_iterator(this->path), // begin it
-    fs::directory_iterator() //end it
+      fs::directory_iterator(this->path), // begin it
+      fs::directory_iterator()            // end it
   );
+
+  git_repository* child_repo = nullptr;
+  git_submodule* sub = nullptr;
 
   for (size_t i = 0; i < entries.size(); i++) {
     File file(entries[i]);
 
-    if (obeyGitIgnore) {
+    if (obeyGitIgnore && repo) {
       int ignored;
       git_ignore_path_is_ignored(&ignored, repo, file.path.c_str());
       if (ignored) {
@@ -1157,7 +1192,6 @@ DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload) {
     } else if (actRes == ACTION::STOP) {
       return STATUS::STOPPED;
     } else if (actRes == ACTION::ABORT) {
-      git_repository_free(repo);
       return STATUS::ABORTED;
     } else if (actRes == ACTION::CONTINUE &&
                !((file.name == ".") || (file.name == "..")) && file.isDir &&
@@ -1168,10 +1202,9 @@ DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload) {
       child.recursive = recursive;
       child.obeyGitIgnore = obeyGitIgnore;
       child.inverted = inverted;
-      STATUS res = child.walk(action, payload);
+      STATUS res = child.walk(repo, action, payload);
 
       if (res == STATUS::ABORTED) {
-        git_repository_free(repo);
         return res;
       } else if (res == STATUS::FAILED) {
         actRes = action(STATUS::FAILED, file, payload);
@@ -1189,45 +1222,44 @@ DirWalker::STATUS DirWalker::walk(WalkAction_t action, void *payload) {
         child.obeyGitIgnore = obeyGitIgnore;
         child.inverted = true;
 
-        git_repository_free(repo);
-        return child.walk(action, payload);
+        return child.walk(repo, action, payload);
       }
     }
   }
 
-  git_repository_free(repo);
   return STATUS::DONE;
 };
 
 void DirWalker::walk(ThreadPool &pool, WalkAction_t action, void *payload) {
   std::shared_ptr<std::atomic<bool>> abortSignal =
       std::make_shared<std::atomic<bool>>(false);
-  walk(pool, action, abortSignal, payload);
-}
-
-void DirWalker::walk(ThreadPool &pool, WalkAction_t action,
-                     std::shared_ptr<std::atomic<bool>> abortSignal,
-                     void *payload) {
   git_repository *repo = NULL;
 
   if (git_repository_open_ext(&repo, path.c_str(),
-                              GIT_REPOSITORY_OPEN_NO_SEARCH, NULL) != GIT_ENOTFOUND) {
+                              GIT_REPOSITORY_OPEN_NO_SEARCH,
+                              NULL) != GIT_ENOTFOUND) {
     std::cout << "found repository in path " << path << std::endl;
   }
+  walk(repo, pool, action, abortSignal, payload);
+  git_repository_free(repo);
+}
 
-std::vector<fs::directory_entry> entries(
-    fs::directory_iterator(this->path),
-    fs::directory_iterator()
-);
+void DirWalker::walk(git_repository* repo, ThreadPool &pool, WalkAction_t action,
+                     std::shared_ptr<std::atomic<bool>> abortSignal,
+                     void *payload) {
+  
+
+  std::vector<fs::directory_entry> entries(fs::directory_iterator(this->path),
+                                           fs::directory_iterator());
 
   for (int i = 0; i < entries.size(); i++) {
     File file(entries[i]);
     // If any thread previously returned ABORT, quit now
-    if (abortSignal->load()){
-      git_repository_free(repo);
+    if (abortSignal->load()) {
       return;
     }
-   if (obeyGitIgnore) {
+
+    if (obeyGitIgnore && repo) {
       int ignored;
       git_ignore_path_is_ignored(&ignored, repo, file.path.c_str());
       if (ignored) {
@@ -1237,15 +1269,13 @@ std::vector<fs::directory_entry> entries(
 
     ACTION actRes = action(STATUS::QUEUING, file, payload);
 
-    if (actRes == ACTION::STOP){
-      git_repository_free(repo);
+    if (actRes == ACTION::STOP) {
       return;
     }
     if (actRes == ACTION::SKIP)
       continue;
     if (actRes == ACTION::ABORT) {
       abortSignal->store(true);
-      git_repository_free(repo);
       return;
     }
 
@@ -1256,7 +1286,7 @@ std::vector<fs::directory_entry> entries(
       child.obeyGitIgnore = obeyGitIgnore;
       child.inverted = inverted;
 
-      child.walk(pool, action, abortSignal, payload);
+      child.walk(repo, pool, action, abortSignal, payload);
     } else if (inverted && i == entries.size() - 1) {
       fs::path parent = fs::absolute(path).parent_path();
       if (path == ".")
@@ -1268,7 +1298,7 @@ std::vector<fs::directory_entry> entries(
         child.obeyGitIgnore = obeyGitIgnore;
         child.inverted = true;
 
-        child.walk(action, payload);
+        child.walk(repo, pool, action, abortSignal, payload);
       }
     } else {
 
@@ -1291,7 +1321,6 @@ std::vector<fs::directory_entry> entries(
 ThreadPool::ThreadPool(size_t maxCount) {
   this->maxCount = maxCount;
   stop = false;
-  std::cout << maxCount << "n threads" << std::endl;
   for (size_t i = 0; i < maxCount; ++i) {
 
     workers.emplace_back([this] {
@@ -1308,7 +1337,6 @@ ThreadPool::ThreadPool(size_t maxCount) {
           task.pop();
         }
         job(); // Execute the action
-        std::cout << activeTasks << " - Task" << std::endl;
         if (activeTasks.fetch_sub(1) == 1) {
           // this was the last job
           finishCondition.notify_all();
@@ -1332,13 +1360,73 @@ template <class F> void ThreadPool::enqueue(F &&f) {
   {
     std::unique_lock<std::mutex> lock(queueMutex);
     activeTasks++;
-    std::cout << activeTasks << " + Task" << std::endl;
     task.emplace(std::forward<F>(f));
   }
   enqueueCondition.notify_one();
 }
 
+// CSTTree
+
+CSTTree::CSTTree(TSTree *tree, std::string_view source) : source(source) {
+  this->tree = tree;
+};
+
+CSTTree::~CSTTree() { ts_tree_delete(tree); };
+
+std::string CSTTree::sTree() {
+  TSNode node = ts_tree_root_node(tree);
+  char *raw = ts_node_string(node);
+  auto res = std::string(raw);
+  free(raw);
+  return res;
+};
+
+void CSTTree::getQueryForNode(TSNode node, std::string &query, size_t level) {
+  // query.append(std::string(level, '\t'));
+  query.append("(");
+  query.append(ts_node_type(node));
+
+  uint32_t count = ts_node_child_count(node);
+
+  for (size_t i = 0; i < count; ++i) {
+    TSNode child = ts_node_child(node, i);
+    if (!ts_node_is_named(child))
+      continue;
+    // query.append("\n");
+    getQueryForNode(child, query, level + 1);
+    // query.append(std::string(level, '\t'));
+  }
+
+  query.append(")");
+  // query.append("@");
+  // query.append(ts_node_type(node));
+  // query.append("_"+std::to_string(level));
+  // query.append("\n");
+};
+
+std::string CSTTree::asQuery() {
+  std::string query;
+  TSNode node = ts_tree_root_node(tree);
+  getQueryForNode(node, query);
+  return query;
+};
+
+std::vector<TSQueryMatch> CSTTree::find(TSQuery* query) {
+  std::vector<TSQueryMatch> results;
+  TSNode root = ts_tree_root_node(tree);
+  TSQueryCursor *cursor = ts_query_cursor_new();
+  ts_query_cursor_exec(cursor, query, root);
+  TSQueryMatch match;
+
+  while (ts_query_cursor_next_match(cursor, &match)) {
+    results.push_back(match);
+  }
+
+  ts_query_cursor_delete(cursor);
+  return results;
+}
 // TSEngine
+
 TSEngine::TSEngine(const TSLanguage *lang) {
   this->lang = lang;
   TSParser *parser = ts_parser_new();
@@ -1348,51 +1436,35 @@ TSEngine::TSEngine(const TSLanguage *lang) {
 
 TSEngine::~TSEngine() { ts_parser_delete(this->parser); };
 
-TSEngine &TSEngine::instance(const TSLanguage *lang) {
-  thread_local TSEngine instance = TSEngine(lang);
-  return instance;
+const CSTTree TSEngine::parse(FileReader &reader) {
+  TSTree *tree = ts_parser_parse(parser, NULL, reader.asTsInput());
+  return CSTTree(tree, reader.get(reader.bufStart, reader.bufSize));
+}
+
+const CSTTree TSEngine::parse(std::string_view source) {
+  TSTree *tree =
+      ts_parser_parse_string(parser, NULL, source.data(), source.length());
+  return CSTTree(tree, source);
 };
 
-void TSEngine::setReader(FileReader &fileReader) {};
+TSQuery* TSEngine::queryNew(std::string& queryExpr){ 
+  return TSEngine::queryNew(lang, queryExpr); 
+};
 
-// Utils
-void Utils::process_tinydir_err(const std::string &context) {
+TSQuery* TSEngine::queryNew(const TSLanguage* lang, std::string& queryExpr){
+  uint32_t errorOffset;
+  TSQueryError error;
 
-  int err = errno; // Global error set by tinydir in C style
-  if (err == 0)
-    return;
+  TSQuery *query = ts_query_new(lang, queryExpr.c_str(),
+                                queryExpr.length(), &errorOffset, &error);
 
-  std::cerr << "[Error] " << context << " | Code: " << err << " | ";
+  assert(error != TSQueryErrorSyntax);
+  assert(error != TSQueryErrorNodeType);
+  assert(error != TSQueryErrorField);
+  assert(error != TSQueryErrorCapture);
+  assert(error == TSQueryErrorNone);
 
-  switch (err) {
-  case EACCES:
-    std::cerr << "Permission denied. Check read/write privileges.";
-    break;
-  case ENOENT:
-    std::cerr << "No such file or directory. Path might be invalid.";
-    break;
-  case EMFILE:
-  case ENFILE:
-    std::cerr << "Too many open files. System handle limit reached.";
-    break;
-  case ENAMETOOLONG:
-    std::cerr << "Path name is too long for the filesystem.";
-    break;
-  case ENOMEM:
-    std::cerr << "Out of memory. Cannot allocate directory buffer.";
-    break;
-  case ENOTDIR:
-    std::cerr << "A component of the path prefix is not a directory.";
-    break;
-  case ELOOP:
-    std::cerr << "Too many symbolic links encountered (Loop).";
-    break;
-  default:
-    std::cerr << std::strerror(err);
-    break;
-  }
-  std::cerr << std::endl;
-}
+ return query; 
+};
+
 #endif // LIB_IMPLEMENTATION
-
-#endif
