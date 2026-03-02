@@ -1,18 +1,52 @@
-### copyPasta
+# copyPasta
 
-A library to allow large-scale semantic aware refactoring of code for error free transformation 
-using tree-sitter parsers parse code files and generate tree
-perform edit operations and check for errors in the CST tree generated using tree-sitter
-complete regex support with pcre2 
+# program the refactoring logic instead of copy+pasting 1000 times
 
-walk a folder with DirWalker in single threaded order 
-the walk can be aborted , skipped, stopped by the job 
-perform refactoring jobs per file
-use ThreadPool when processing to   increase performace when the files are mix of many small and large sizes
+A **single header stb style library** to allow **large-scale semantic aware refactoring of code for error free transformation**
+with the goal of having `minimal manual work` in bulk refactoring projects like `version upgrade / migrations` that require `complex and context aware code changes`.
 
-when a error free job is processed the file can be added to stage programatically in git
+Changes you make can be **error prone** and require extra separate step of **third party verification**.
 
-files with CST with errors remains unstaged
+**copyPasta allows you to**:
+
+* Program the logic for the transformation you want, test the logic with **dry runs**
+* find accurate edit locations accross the codebase using `tree-sitter queries and regex`
+* perform valid edit operations like `write`,`append`,`insert`,`replace`,`delete`
+* validate the changes in dry run checking the **CST** - concrete syntax tree for errors 
+* Have **safe, verifiable, repeatable refactoring** with **git** as VCS
+
+> This project was my way of implementing a refactoring engine to help with hibernate upgrade from 4.5 to 6.4 which involved code changes across 5804 java files
+> the migration guide already has the changes needed to be made but some changes are not straight forward global replace but require context aware change
+> eg context aware change like Query old = session.createQuery("from MyEntity m"); -> Query<MyEntity> new = session.createQuery("from MyEntity m", MyEntity.class);
+> or simple changes like setString(...), setInteger(...), etc. to setParameter(...)
+> and query.list() to query.getResultList() and query.iterator() to query.getResultList().iterator() 
+> and major changes like Criterion api and tupleTransformers in place of resultTransformers
+
+---
+
+## How it Works
+
+* Using **Tree-sitter parsers** to parse code files and generate tree
+* find the position in the file where to apply the edit using tree sitter queries or using regex 
+* Perform **edit operations** and check for errors in the **CST tree** generated using Tree-sitter
+* Complete **regex support** with **PCRE2**
+
+---
+
+## File Processing
+
+* Walk a folder with **DirWalker** in **single-threaded order**
+* The walk can be **aborted**, **skipped**, or **stopped** by the job
+* Perform **refactoring jobs per file**
+* Use **ThreadPool** when processing to **increase performance** when the files are mix of **many small and large sizes**
+
+---
+
+## Git Integration
+
+* When an **error-free job** is processed, the file can be **added to stage programmatically in git**
+* Files with **CST having errors** remain **unstaged**
+
 
 
 ### build
@@ -31,13 +65,21 @@ Parse → Edit → Validate → Save → Stage
 ```
 
 ```
-DirWalker → FileReader → TSEngine → CSTTree
-                                  ↓
-                             FileEditor
-                                  ↓
-                              FileWriter
-                                  ↓
-                               LibGit
+DirWalker
+     ↓
+FileWriter, FileReader
+     ↓
+TSEngine →  TSQuery
+     ↓
+CSTTree
+     ↓
+FileEditor (queue edits: INSERT, SAVE, VALIDATE_CST)
+     ↓
+Apply edits → check errors
+     ↓
+if no errors → LibGit.add
+     ↓
+compile and verify
 ```
 ---
 
@@ -79,6 +121,12 @@ pool.waitUntilFinished();
 
 ---
 
+## Goals
+* **Refactoring in large scale codebase**
+* **Safe transformations with dry run and semantic validation**
+* **Semantic correctness**: Prevent staging of files with CST errors.
+* **High performance**: ThreadPool support for parallel file processing.
+* **Language-agnostic**: Work with any language supported by Tree-sitter.
 ## Dependencies
 
 * [**libgit2**](https://libgit2.org/)
@@ -86,14 +134,6 @@ pool.waitUntilFinished();
 * [**Tree-sitter**](https://tree-sitter.github.io/tree-sitter/) 
 * [**Tree-stter-parser](https://github.com/tree-sitter)
 ---
-
-## Goals
-* **Refactoring in large scale codebase**
-* **Safe transformations with dry run and semantic validation**
-* **Semantic correctness**: Prevent staging of files with CST errors.
-* **High performance**: ThreadPool support for parallel file processing.
-* **Language-agnostic**: Work with any language supported by Tree-sitter.
-
 ### API
 ```c++
 class ThreadPool {
