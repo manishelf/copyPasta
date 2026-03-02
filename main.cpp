@@ -1,9 +1,11 @@
+#include "git2/signature.h"
 #include <cctype>
 #include <git2.h>
 #include <iostream>
 #include <lib.hpp>
 #include <string>
 #include <tree_sitter/api.h>
+#include <assert.h>
 
 using namespace std;
 
@@ -11,53 +13,83 @@ extern "C" {
 const TSLanguage *tree_sitter_java(void);
 }
 
-int main(int argc, char **argv) {
-  std::string path = argv[1];
+int fn2(char** argv){
+  
+  string path = argv[1];
   ThreadPool pool;
   DirWalker walker(path);
   walker.recursive = true;
+  LibGit git; // handle lib_git_init;
 
-  if (git_libgit2_init() < 0) {
-    cerr << "unable to intialize libgit2" << endl;
-  }
+  string from = ".setTupleTransformer((tuple, alias)->{ ... })";
+  string to = ".setTupleTransformer((tuple, alias)->{ /* ... */ })";
 
-  string f = ".setTupleTransformer((tuple, alias)->{ })";
-
-  string qf = "(method_invocation(identifier) @method_name                      \
-               (argument_list(lambda_expression(inferred_parameters(identifier) \
-               (identifier))(block) @lamda_block))) ";
-  // use https://tree-sitter.github.io/tree-sitter/7-playground.html and
-  // CSTTree::asQuery()
+  string qf = R"(
+              (method_invocation
+                  (identifier) 
+               arguments: (argument_list
+                 (lambda_expression
+                   parameters: (inferred_parameters)
+                   body: (block) @lamda_block)))
+                          )";
 
   const TSLanguage *lang = tree_sitter_java();
 
-  TSQuery* q = TSEngine::queryNew(lang, qf); 
+  walker.walk([lang, &qf](DirWalker::STATUS s, File f) {
 
-  walker.walk([q, lang](DirWalker::STATUS s, File f, void *p) {
-    if(f.ext != ".java") return DirWalker::CONTINUE;
+    if(s ==DirWalker::QUEUING) return DirWalker::CONTINUE;
 
-    FileReader r(f);
-    TSEngine e(lang);
-    CSTTree t = e.parse(r);
-    for(auto match : t.find(q)){
-      for(size_t i = 0; i < match.capture_count; i++){
-        TSNode node = match.captures[i].node;
-        if(ts_node_is_null(node)) continue;
+    if(f.ext != ".java")
+      return DirWalker::CONTINUE;
 
-        auto start = ts_node_start_point(node);
-         auto end = ts_node_end_point(node);
-         cout << f.pathStr << ":" << start.row <<":"<< start.column << "\n";
-         cout << "----" << "\n";
-         cout << r.get(ts_node_start_byte(node), ts_node_end_byte(node))<< "\n";
-         cout << "----" << "\n";
+    FileWriter w(f);
+    FileEditor edt; 
+    TSEngine eng(lang);
+
+    // needs to be local to thread for cursors to work correctly
+    // mightbe a bug as TSQuery is immutable according to docs 
+    thread_local TSQuery* q = eng.queryNew(qf);
+
+    CSTTree t = eng.parse(w); 
+
+    t.find(q, [&w, &edt](TSQueryMatch match) mutable{ 
+      for(size_t i = 0; i < match.capture_count; i++ ){
+        TSNode n = match.captures[i].node;
+        auto sb = ts_node_start_byte(n);
+        auto eb = ts_node_end_byte(n);
+        auto sp = ts_node_start_point(n);
+        auto ep = ts_node_end_point(n);
+
+        edt.queue({FileEditor::OP::INSERT, {sb+1, sb+1+2}, {"", "/*"}});
+        edt.queue({FileEditor::OP::INSERT, {eb-1, eb-1+2}, {"", "*/"}});
+        edt.queue({FileEditor::OP::PRINT_DIF, {w.rowOffsets[sp.row-1], w.rowOffsets[ep.row+1]}, {"TO", ""}});
       }
-    };
-    return DirWalker::CONTINUE;
+    });
+    edt.queue({FileEditor::OP::SAVE});
+    edt.queue({FileEditor::OP::VALIDATE_CST, {},{f.pathStr}});
+
+    auto errors = edt.apply(t, w);
+
+    for(auto err : errors ){
+      size_t row , col;
+      row = err.range.start_point.row;
+      col = err.range.start_point.column;
+      cout << "ERROR:" << edt.ERROR_STR[err.e] << endl;
+      cout << f.pathStr <<":" << row << ":"<< col << endl;
+    }
+
+    edt.reset();
+  
+    return DirWalker::STOP;
   });
 
-  ts_query_delete(q);
   pool.waitUntilFinished();
-  git_libgit2_shutdown();
 
   return 0;
 }
+
+int main(int argc, char** argv){
+
+  return fn2(argv);
+}
+
