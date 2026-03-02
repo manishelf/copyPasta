@@ -16,11 +16,23 @@ Changes you make can be **error prone** and require extra separate step of **thi
 * Have **safe, verifiable, repeatable refactoring** with **git** as VCS
 
 > This project was my way of implementing a refactoring engine to help with hibernate upgrade from 4.5 to 6.4 which involved code changes across 5804 java files
-> the migration guide already has the changes needed to be made but some changes are not straight forward global replace but require context aware change
-> eg context aware change like Query old = session.createQuery("from MyEntity m"); -> Query<MyEntity> new = session.createQuery("from MyEntity m", MyEntity.class);
-> or simple changes like setString(...), setInteger(...), etc. to setParameter(...)
-> and query.list() to query.getResultList() and query.iterator() to query.getResultList().iterator() 
-> and major changes like Criterion api and tupleTransformers in place of resultTransformers
+> The migrations guides [1](https://docs.hibernate.org/orm/6.0/migration-guide/) [2](https://github.com/quarkusio/quarkus/wiki/Migration-Guide-3.0:-Hibernate-ORM-5-to-6-migration)  already had the list of changes needed to be made but some changes are not straight forward global replace but require context aware change
+> **Examples of context-aware changes:**
+>
+> ```java
+> Query old = session.createQuery("from MyEntity m");
+> Query<MyEntity> new = session.createQuery("from MyEntity m", MyEntity.class);
+> ```
+> **Examples of simple changes:**
+> * package namespace changes to jakarta
+> ```java
+> setString(...), setInteger(...), etc. → setParameter(...)
+> query.list() → query.getResultList()
+> query.iterator() → query.getResultList().iterator()
+> ```
+> **Examples of major changes:**
+> * Migrating from **Criterion API**
+> * Using **tupleTransformers** in place of **resultTransformers**
 
 ---
 
