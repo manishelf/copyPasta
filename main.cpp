@@ -10,69 +10,30 @@
 using namespace std;
 
 extern "C" {
- const TSLanguage *tree_sitter_java(void);
+const TSLanguage *tree_sitter_java(void);
 }
 
-
-
-string from = "Query<E> q = getAm().createQuery(\"hql\", E);";
-string to = "Query q = getAm().createQuery(\"hql\");";
-
-
-
-void delete_type(FileEditor& e, CSTTree& t, TSNode n){
-  auto r = TSEngine::getRange(n);
-  TSRange change = {r.start_point, r.end_point, r.start_byte -1, r.end_byte+1};
-  e.queue({FileEditor::DELETE, change});
-  e.queue({FileEditor::PRINT_CHANGE, change, {t.getText(n), ""}});
-}
-
-void delete_klass(FileEditor& e, CSTTree& t, TSNode n){
-  auto r = TSEngine::getRange(n);
-  TSRange change = {r.start_point, r.end_point, r.start_byte -1, r.end_byte+1};
-  e.queue({FileEditor::DELETE, change});
-  e.queue({FileEditor::PRINT_CHANGE, change, {t.getText(n), ""}});
-}
-
-int main(int argc, char** argv){
+int fn2(char** argv){
   
   string path = argv[1];
   ThreadPool pool;
   DirWalker walker(path);
   walker.recursive = true;
-  const TSLanguage *lang = tree_sitter_java();
+
+  string from = ".setTupleTransformer((tuple, alias)->{ ... })";
+  string to = ".setTupleTransformer((tuple, alias)->{ /* ... */ })";
+
   string qf = R"(
-(local_variable_declaration
-  type: (generic_type
-    (type_identifier) @q
-    (#eq? @q "Query")
-    (type_arguments
-      (type_identifier) @type))
+              (method_invocation
+                  (identifier) @method_name
+                  (#eq? @method_name "setTupleTransformer")
+               arguments: (argument_list
+                 (lambda_expression
+                   parameters: (inferred_parameters)
+                   body: (block) @lamda_block)))
+                          )";
 
-   (variable_declarator
-     (identifier) @var
-     (method_invocation
-       (method_invocation
-         (method_invocation
-           (identifier) @method_name
-          (#eq? @method_name "createQuery")
-
-          (argument_list
-            [
-              (string_literal) @simple_q
-              (binary_expression) @concat_q
-            ] @query
-
-            (class_literal
-              (type_identifier) @klass)
-          )
-        )
-      )
-    )
-  )
-)
-                    )";
-
+  const TSLanguage *lang = tree_sitter_java();
 
   walker.walk([lang, &qf](DirWalker::STATUS s, File f) {
 
@@ -85,42 +46,42 @@ int main(int argc, char** argv){
     FileEditor edt; 
     TSEngine eng(lang);
 
+    // needs to be local to thread for cursors to work correctly
+    // mightbe a bug as TSQuery is immutable according to docs 
     thread_local TSQuery* q = eng.queryNew(qf);
 
     CSTTree t = eng.parse(w); 
 
-    t.find(q, [&w, &t, &edt](TSQueryMatch match) mutable{ 
+    t.find(q, [&t, &w, &edt](TSQueryMatch match) mutable{ 
       for(size_t i = 0; i < match.capture_count; i++ ){
+        // method name
+        if(match.captures[i].index == 0) continue;
+
         TSNode n = match.captures[i].node;
-        switch(match.captures[i].index){
-          case 1: // Query 
-                  break;
-          case 2: // type
-                  delete_type(edt, t, n);
-                  break;
-          case 3: // createQuery
-                  break;
-          case 4: // query
-                  break;
-          case 5: // klass
-                  delete_klass(edt, t, n);
-                  break;
-          default : assert("unreachable");
-        };
+
+        TSRange change = TSEngine::getRange(n);
+        change.start_byte +=1;
+        change.start_byte +=1+2;
+        edt.queue({FileEditor::OP::INSERT, change, {"", "/*"}});
+        change.start_byte = change.end_byte - 1;
+        change.end_byte = change.end_byte - 1+1;
+        edt.queue({FileEditor::OP::INSERT, change, {"", "*/"}});
+        change.start_point.row -= 1;
+        change.end_point.row += 1;
+        edt.queue({FileEditor::OP::PRINT_CHANGE, change, {t.getText(n), ""}});
       }
     });
-
-  //  edt.queue({FileEditor::OP::SAVE});
+    //edt.queue({FileEditor::OP::SAVE});
     edt.queue({FileEditor::OP::VALIDATE_CST, {},{f.pathStr}});
 
     auto errors = edt.apply(t, w);
 
-    for(auto err : errors){
+    for(auto err : errors ){
       size_t row , col;
       row = err.range.start_point.row;
       col = err.range.start_point.column;
-      //cout << "ERROR:" << edt.ERROR_STR[err.e] << endl;
-      //cout << f.pathStr <<":" << row << ":"<< col << endl;
+      cout << "ERROR:" << edt.ERROR_STR[err.e] << endl;
+      cout << f.pathStr <<":" << row << ":"<< col << endl;
     }
 
     edt.reset();
@@ -131,5 +92,10 @@ int main(int argc, char** argv){
   pool.waitUntilFinished();
 
   return 0;
+}
+
+int main(int argc, char** argv){
+
+  return fn2(argv);
 }
 

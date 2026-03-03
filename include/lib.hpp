@@ -1431,11 +1431,15 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
       FileReader r(writer.snapshot());
 
       std::cout << writer.snapshot().file.pathStr << ":" << pOld.row << ":" << pOld.column << "\n";
-      std::cout << "change: " << edit.change[0] << " -> " << edit.change[1] << "\n";
-      std::cout << "at: " << pOld.row << ":" << pOld.column << " - " << pNew.row << ":" << pNew.column << "\n";
-      std::cout << ">>>>>>>>>>>" << "\n";
-      std::cout << r.get(edit.range.start_byte, edit.range.end_byte) << "\n";
-      std::cout << "<<<<<<<<<<<" << "\n";
+      std::cout << "range: " << pOld.row << ":" << pOld.column << " - " << pNew.row << ":" << pNew.column << "\n";
+      std::cout 
+       << "change: " << "\n"
+       << ">>>>>>>>>>>>" << "\n" 
+       << edit.change[0] << "\n"
+       << ">>>>>>>>>>>>"
+       << edit.change[1] << "\n"
+       << ">>>>>>>>>>>>" << "\n"
+       << r.get(r.rowOffsets[edit.range.start_point.row], r.rowOffsets[edit.range.end_point.row]) << "\n"    << "<<<<<<<<<<<<" << "\n";
       break;
     }
     case FileEditor::OP::SAVE: {
@@ -1761,7 +1765,8 @@ void CSTTree::getQueryForNode(TSNode node, std::string &query, size_t level) {
 std::string CSTTree::getText(TSNode n){
   auto sb = ts_node_start_byte(n);
   auto eb = ts_node_end_byte(n);
-  return std::string(source.substr(sb, eb));
+  // juggling like this is necessary to get correct string length
+  return std::string(source.substr(sb, eb).data(), eb-sb);
 };
 
 std::string CSTTree::asQuery() {

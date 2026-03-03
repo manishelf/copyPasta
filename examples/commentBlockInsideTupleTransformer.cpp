@@ -19,7 +19,6 @@ int fn2(char** argv){
   ThreadPool pool;
   DirWalker walker(path);
   walker.recursive = true;
-  LibGit git; // handle lib_git_init;
 
   string from = ".setTupleTransformer((tuple, alias)->{ ... })";
   string to = ".setTupleTransformer((tuple, alias)->{ /* ... */ })";
@@ -53,23 +52,26 @@ int fn2(char** argv){
 
     CSTTree t = eng.parse(w); 
 
-    t.find(q, [&w, &edt](TSQueryMatch match) mutable{ 
+    t.find(q, [&t, &w, &edt](TSQueryMatch match) mutable{ 
       for(size_t i = 0; i < match.capture_count; i++ ){
         // method name
         if(match.captures[i].index == 0) continue;
 
         TSNode n = match.captures[i].node;
-        auto sb = ts_node_start_byte(n);
-        auto eb = ts_node_end_byte(n);
-        auto sp = ts_node_start_point(n);
-        auto ep = ts_node_end_point(n);
 
-        edt.queue({FileEditor::OP::INSERT, {sb+1, sb+1+2}, {"", "/*"}});
-        edt.queue({FileEditor::OP::INSERT, {eb-1, eb-1+2}, {"", "*/"}});
-        edt.queue({FileEditor::OP::PRINT_DIF, {w.rowOffsets[sp.row-1], w.rowOffsets[ep.row+1]}, {"TO", ""}});
+        TSRange change = TSEngine::getRange(n);
+        change.start_byte +=1;
+        change.start_byte +=1+2;
+        edt.queue({FileEditor::OP::INSERT, change, {"", "/*"}});
+        change.start_byte = change.end_byte - 1;
+        change.end_byte = change.end_byte - 1+1;
+        edt.queue({FileEditor::OP::INSERT, change, {"", "*/"}});
+        change.start_point.row -= 1;
+        change.end_point.row += 1;
+        edt.queue({FileEditor::OP::PRINT_CHANGE, change, {t.getText(n), ""}});
       }
     });
-    edt.queue({FileEditor::OP::SAVE});
+    //edt.queue({FileEditor::OP::SAVE});
     edt.queue({FileEditor::OP::VALIDATE_CST, {},{f.pathStr}});
 
     auto errors = edt.apply(t, w);
