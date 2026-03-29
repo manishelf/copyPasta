@@ -257,34 +257,45 @@ public:
   FileWriter &write(const std::string &content); // replace entire buf content
   FileWriter &write(size_t offset, char *newCont, size_t newContLen);
   FileWriter &write(size_t offset, std::string &cont);
+  FileWriter &write(size_t from, size_t to, std::string &cont);
 
   FileWriter &append(std::string &cont);
   FileWriter &insert(size_t offset, std::string &newCont);
   FileWriter &insertRow(size_t row, const std::string &line);
   FileWriter &deleteRow(size_t row);
   FileWriter &deleteCont(size_t from, size_t to);
+
+  FileWriter &replace(std::string pattern, std::string templateOrResult,
+                      size_t nth_occ = 0, // 0 for first 1 for second and
+                                          //-1 for last, -2 for last second and so on
+                      size_t opt = PCRE2_SUBSTITUTE_GLOBAL | PCRE2_SUBSTITUTE_EXTENDED);
   FileWriter &replaceAll(std::string pattern, std::string templateOrResult,
                          size_t opt = PCRE2_SUBSTITUTE_GLOBAL |
                                       PCRE2_SUBSTITUTE_EXTENDED);
-  FileWriter &
-  replace(std::string pattern, std::string templateOrResult,
-          size_t nth_occ = 0, // 0 for first 1 for second and
-                              //-1 for last, -2 for last second and so on
-          size_t opt = PCRE2_SUBSTITUTE_GLOBAL | PCRE2_SUBSTITUTE_EXTENDED);
 };
 
-// order based on increasing priority
+// order based on increasing precedence 
 #define FOREACH_OP(OP)                                                         \
-  OP(PRINT_PATH)                                                               \
-  OP(VALIDATE_CST)                                                             \
   OP(FLUSH)                                                                    \
   OP(SAVE)                                                                     \
-  OP(PRINT_CHANGE)                                                             \
+  OP(PRINT_PATH)                                                               \
+  OP(PRINT_ERRORS)                                                             \
+  OP(VALIDATE_CST)                                                             \
+  OP(PRINT_CHANGE_AFTER)                                                       \
   OP(MARK)                                                                     \
   OP(WRITE)                                                                    \
   OP(INSERT)                                                                   \
   OP(REPLACE)                                                                  \
-  OP(DELETE)
+  OP(DELETE)                                                                   \
+  OP(PRINT_CHANGE_BEFORE)                                                       
+
+#define NOT_CONFLICTING_OP(op)              \
+  (   op == OP::PRINT_CHANGE_BEFORE         \
+   || op == OP::PRINT_CHANGE_AFTER          \
+   || op == OP::PRINT_PATH                  \
+   || op == OP::PRINT_ERRORS                \
+  )   
+
 
 #define FOREACH_ERROR(ERR)                                                     \
   ERR(CONFLICT)                                                                \
@@ -313,7 +324,8 @@ public:
   struct Edit {
     OP op;
     TSRange range;
-    std::string change[2];
+    std::string change;
+    std::string context;
     pcre2_code *rc;
   };
   struct Error {
@@ -322,10 +334,10 @@ public:
     Edit edit;
   };
   FileEditor();
-  void queue(Edit e);
+  void queue(Edit e); // unordered
   void reset();
+  std::vector<Error> getConflictErrors();
   std::vector<Error> apply(CSTTree &original, FileWriter &writer);
-  
 
 private:
   std::vector<Edit> operations;
@@ -692,6 +704,12 @@ std::string_view FileReader::get(size_t from, size_t to) {
 };
 
 std::string_view FileReader::getLine(size_t row) {
+  // this has caused OOM due to unbounded access over the array :)
+  if(row + 1 == rowOffsets.size()){
+    return get(rowOffsets[row], this->file.size);
+  }else if (row >= rowOffsets.size()){
+    return "";
+  }
   return get(rowOffsets[row], rowOffsets[row + 1]);
 }
 
@@ -1146,6 +1164,7 @@ FileWriter &FileWriter::append(std::string &cont) {
 }
 
 FileWriter &FileWriter::insert(size_t offset, std::string &slice) {
+  assert(offset < snap.cont.size());
   snap.cont.insert(offset, slice);
   modifySnap
 };
@@ -1156,18 +1175,30 @@ FileWriter &FileWriter::write(const std::string &content) {
 }
 
 FileWriter &FileWriter::write(size_t offset, char *newCont, size_t newContLen) {
+  assert(offset < snap.cont.size());
   snap.cont.erase(offset, newContLen);
   snap.cont.insert(offset, newCont, newContLen);
   modifySnap
 };
 
 FileWriter &FileWriter::write(size_t offset, std::string &cont) {
+  assert(offset < snap.cont.size());
   snap.cont.erase(offset, cont.length());
   snap.cont.insert(offset, cont);
   modifySnap
 };
 
+FileWriter &FileWriter::write(size_t from, size_t to, std::string &cont) {
+  assert(from >= 0);
+  assert(to < snap.cont.size());
+  snap.cont.erase(from, to-from);
+  snap.cont.insert(from, cont);
+  modifySnap
+};
+
 FileWriter &FileWriter::deleteCont(size_t from, size_t to) {
+  assert(from >= 0);
+  assert(to < snap.cont.size());
   snap.cont.erase(from, to - from);
   modifySnap
 };
@@ -1332,10 +1363,9 @@ TSPoint FileEditor::getNewEndPoint(const Edit &edit){
         return p;
     }
 
-    const std::string& change = edit.change[1];
-    if(change.empty()) return p;
+    if(edit.change.empty()) return p;
 
-    for (char c : change) {
+    for (char c : edit.change) {
         if (c == '\n') {
             p.row += 1;
             p.column = 0;
@@ -1347,71 +1377,113 @@ TSPoint FileEditor::getNewEndPoint(const Edit &edit){
     return p;
 };
 
+std::vector<FileEditor::Error> FileEditor::getConflictErrors(){
+
+  auto op = operations;
+
+  /*
+   * scan in ascending order of start offsets.
+   * Why? Because once the next edit starts after the current edit ends, no further overlap is possible.
+   * This allows an efficient early break in the inner loop.
+   */
+  std::sort(op.begin(), op.end(),
+      [](const FileEditor::Edit &a, const FileEditor::Edit &b) {
+        if (a.range.start_byte != b.range.start_byte)
+          return a.range.start_byte < b.range.start_byte;
+
+        return a.range.end_byte < b.range.end_byte;
+      });
+
+  // O(n2) can this be O(nlogn)?
+  for (size_t i = 0; i < op.size(); ++i) {
+    const auto &x = op[i];
+
+    // sort of a selection sort
+    for (size_t j = i + 1; j < op.size(); ++j) {
+      const auto &y = op[j];
+
+      size_t x1 = x.range.start_byte;
+      size_t x2 = x.range.end_byte;
+      size_t y1 = y.range.start_byte;
+      size_t y2 = y.range.end_byte;
+      // conflicts could be - 
+      //  x1 y1 y2 x2
+      //  y1 x1 x2 y2
+      //  x1 y1 x2 y2
+      //  y1 x1 y2 x2
+
+      // since sorted by start, no need to check all cases
+      //This gives O(n²) worst-case, but the break reduces comparisons in practice.
+      if (y1 >= x2) break; // no overlap possible further
+
+
+      if(NOT_CONFLICTING_OP(x.op) || NOT_CONFLICTING_OP(y.op))
+        continue;
+
+      // overlap exists
+      size_t overlap_start = std::max(x1, y1);
+      size_t overlap_end   = std::min(x2, y2);
+
+      TSRange r;
+      r.start_byte = (uint32_t)overlap_start;
+      r.end_byte   = (uint32_t)overlap_end;
+
+      errors.push_back({CONFLICT, r, x});
+      errors.push_back({CONFLICT, r, y});
+    }
+  }
+  return errors;
+}
+
 std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
                                                  FileWriter &writer) {
 
-  sort(operations.begin(), operations.end(),
-       [this](FileEditor::Edit x, FileEditor::Edit y) {
-         size_t x1 = x.range.start_byte;
-         size_t x2 = x.range.end_byte;
-         size_t y1 = y.range.start_byte;
-         size_t y2 = y.range.end_byte;
+  // TODO: maybe handle the conflicts based on some priority
+  getConflictErrors();
 
-         TSRange r1;
-         TSRange r2;
-         if ((x1 == x2 == 0 || y1 == y2 == 0) || (x1 >= y2 || y1 > x2)) {
-           return x.op > y.op;
-         } else if (x1 <= y1 && y2 <= x2) {
-           // x1 y1 y2 x2
-           r1 = {(uint32_t)x1, (uint32_t)y1};
-           r2 = {(uint32_t)y2, (uint32_t)x2};
-         } else if (y1 <= x1 && x2 <= y2) {
-           // y1 x1 x2 y2
-           r1 = {(uint32_t)y1, (uint32_t)x1};
-           r2 = {(uint32_t)x2, (uint32_t)y2};
-         } else if (x1 <= y1 && x2 <= y2) {
-           // x1 y1 x2 y2
-           r1 = {(uint32_t)x1, (uint32_t)y1};
-           r2 = {(uint32_t)x2, (uint32_t)y2};
-         } else if (y1 <= x1 && y2 <= x2) {
-           // y1 x1 y2 x2
-           r1 = {(uint32_t)y1, (uint32_t)x1};
-           r2 = {(uint32_t)y2, (uint32_t)x2};
-         }
-
-         errors.push_back({CONFLICT, r1, x});
-         errors.push_back({CONFLICT, r2, y});
-
-         return x.op > y.op;
-       });
+  std::sort(operations.begin(), operations.end(),
+  [](const FileEditor::Edit &a, const FileEditor::Edit &b) {
+    // desc
+    if (a.op != b.op)
+      return a.op > b.op;
+    // desc
+    if (a.range.start_byte != b.range.start_byte)
+      return a.range.start_byte > b.range.start_byte;
+    // desc
+    return a.range.end_byte > b.range.end_byte;
+  });
 
   for (size_t i = 0; i < operations.size(); i++) {
     auto edit = operations[i];
+    TSInputEdit te = {
+          edit.range.start_byte,    // start_byte
+          edit.range.end_byte,      // old_end_byte
+          edit.range.end_byte,      // new_end_byte
+          edit.range.start_point,   // start_point
+          edit.range.end_point,     // old_end_point
+          getNewEndPoint(edit),     // new_end_point
+    };
     switch (edit.op) {
-    case FileEditor::OP::INSERT: {
-      TSInputEdit te = {
-          edit.range.start_byte,
-          edit.range.start_byte,
-          edit.range.start_byte + (uint32_t)edit.change[1].length(),
-          edit.range.start_point,
-          edit.range.end_point,
-          getNewEndPoint(edit),
-      };
-      writer.insert(edit.range.start_byte, edit.change[1]);
+    case FileEditor::OP::INSERT: 
+    {
+      te.old_end_byte = edit.range.start_byte;
+      te.new_end_byte = edit.range.start_byte + (uint32_t)edit.change.length();
+      writer.insert(edit.range.start_byte, edit.change);
       original.edit(te, writer.snapshot().cont);
       break;
     }
     case FileEditor::OP::DELETE:
     {
-      TSInputEdit te = {
-          edit.range.start_byte,
-          edit.range.end_byte,
-          edit.range.start_byte,
-          edit.range.start_point,
-          edit.range.end_point,
-          getNewEndPoint(edit),
-      };
+      te.old_end_byte = edit.range.end_byte;
       writer.deleteCont(edit.range.start_byte, edit.range.end_byte);
+      original.edit(te, writer.snapshot().cont);
+      break;
+    }
+    case FileEditor::OP::WRITE:
+    {
+      te.old_end_byte = edit.range.end_byte;
+      te.new_end_byte = edit.range.start_byte + (uint32_t)edit.change.length();
+      writer.write(edit.range.start_byte, edit.range.end_byte, edit.change);
       original.edit(te, writer.snapshot().cont);
       break;
     }
@@ -1421,33 +1493,133 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
       }
       break;
     }
-    case FileEditor::OP::PRINT_PATH: {
-      std::cout << writer.snapshot().file.pathStr << ":" << edit.range.start_point.row << ":" << edit.range.start_point.column << "\n";
+    case FileEditor::OP::PRINT_PATH:
+    {
+      std::cout << writer.snapshot().file.pathStr    << ":" 
+                << edit.range.start_point.row    + 1 << ":" 
+                << edit.range.start_point.column + 1 << "\n";
       break;
     }
-    case FileEditor::OP::PRINT_CHANGE: {
-      auto pOld = edit.range.start_point;
-      auto pNew = getNewEndPoint(edit);
+    case FileEditor::OP::PRINT_CHANGE_BEFORE:
+    case FileEditor::OP::PRINT_CHANGE_AFTER:
+    {
+      const auto pOld = edit.range.start_point;
+      const auto pNew = getNewEndPoint(edit);
+
       FileReader r(writer.snapshot());
 
-      std::cout << writer.snapshot().file.pathStr << ":" << pOld.row << ":" << pOld.column << "\n";
-      std::cout << "range: " << pOld.row << ":" << pOld.column << " - " << pNew.row << ":" << pNew.column << "\n";
-      std::cout 
-       << "change: " << "\n"
-       << ">>>>>>>>>>>>" << "\n" 
-       << edit.change[0] << "\n"
-       << ">>>>>>>>>>>>"
-       << edit.change[1] << "\n"
-       << ">>>>>>>>>>>>" << "\n"
-       << r.get(r.rowOffsets[edit.range.start_point.row], r.rowOffsets[edit.range.end_point.row]) << "\n"    << "<<<<<<<<<<<<" << "\n";
+      const auto& path = writer.snapshot().file.pathStr;
+
+      // one based                        
+      const auto startRow = pOld.row     + 1;
+      const auto startCol = pOld.column  + 1;
+      const auto endRow   = pNew.row     + 1;
+      const auto endCol   = pNew.column  + 1;
+
+      const auto oldStart = r.rowOffsets[edit.range.start_point.row] + edit.range.start_point.column;
+      const auto oldEnd   = r.rowOffsets[edit.range.end_point.row] + edit.range.end_point.column;
+
+      const std::string_view original = r.get(oldStart, oldEnd);
+
+      std::cout << path << ":" << startRow << ":" << startCol << "\n";
+      std::cout << "range: " << startRow << ":" << startCol
+                << " -> " << endRow << ":" << endCol << "\n";
+      std::cout << this->OP_STR[edit.op] << " : ";
+      std::cout << edit.context << "\n";
+
+      std::cout << "<<<<<<<<"   << "\n";
+      std::cout.write(original.data(), static_cast<std::streamsize>(original.size())) << "\n";
+      std::cout << "========"   << "\n";
+      std::cout << edit.change  << "\n";
+      std::cout << ">>>>>>>>"   << "\n";
+
+      std::cout << "-----------------------------------------------------------------\n";
+
       break;
     }
-    case FileEditor::OP::SAVE: {
+    case FileEditor::OP::PRINT_ERRORS:
+    {
+      for (size_t i = 0; i < errors.size(); ++i) {
+        const auto &err = errors[i];
+        std::cout << writer.snapshot().file.pathStr << ":"
+          << err.range.start_point.row + 1 << ":"
+          << err.range.start_point.column + 1 << "\n";
+
+        switch (err.e) {
+          case CONFLICT: 
+            {
+              const auto &errX = errors[i];
+              const auto &errY = errors[i + 1];
+
+              size_t x1 = errX.edit.range.start_byte;
+              size_t x2 = errX.edit.range.end_byte;
+              size_t y1 = errY.edit.range.start_byte;
+              size_t y2 = errY.edit.range.end_byte;
+
+              size_t overlap_start = errX.range.start_byte;
+              size_t overlap_end   = errX.range.end_byte;
+
+              std::cout << "CONFLICT detected:\n";
+
+              std::cout << "  Edit X : [" << x1 << ", " << x2 << "] -> \""
+                << errX.edit.change << "\"\n";
+
+              std::cout << "  Edit Y : [" << y1 << ", " << y2 << "] -> \""
+                << errY.edit.change << "\"\n";
+
+              std::cout << "  Overlap: [" << overlap_start << ", "
+                << overlap_end << "]\n\n";
+
+              i++; 
+              break;
+            }
+          case CST_ERROR: 
+            {
+              std::cout << "CST_ERROR:\n";
+
+              std::cout << "  Range: [" 
+                << err.range.start_point.row << ":" << err.range.start_point.column
+                << " , " 
+                << err.range.end_point.row << ":" << err.range.end_point.column << "]\n";
+
+              std::cout << "  Edit : [" 
+                << err.edit.range.start_point.row << ":" << err.edit.range.start_point.column
+                << ", "
+                << err.edit.range.end_point.row << ":" << err.edit.range.end_point.column
+                << "] -> \""
+                << err.edit.change << "\"\n\n";
+              break;
+            }
+          case CST_MISSING: 
+            {
+              std::cout << "CST_MISSING:\n";
+              std::cout << "  Range: [" 
+                << err.range.start_byte
+                << ", " 
+                << err.range.end_byte 
+                << "]\n";
+              std::cout << "  Edit : [" 
+                << err.edit.range.start_byte
+                << ", " 
+                << err.edit.range.end_byte 
+                << "] -> \""
+                << err.edit.change 
+                << "\"\n\n";
+              break;
+            }
+          default:
+            assert(0 && "NOT_IMPLEMENTED");
+        }
+      }
+      break;
+    }
+    case FileEditor::OP::SAVE: 
+    {
       writer.save();
       break;
     }
     case FileEditor::OP::FLUSH: {
-      writer.flush(edit.change[1]);
+      writer.flush(edit.change);
       break;
     }
     default: {
@@ -1765,8 +1937,7 @@ void CSTTree::getQueryForNode(TSNode node, std::string &query, size_t level) {
 std::string CSTTree::getText(TSNode n){
   auto sb = ts_node_start_byte(n);
   auto eb = ts_node_end_byte(n);
-  // juggling like this is necessary to get correct string length
-  return std::string(source.substr(sb, eb).data(), eb-sb);
+  return std::string(source.substr(sb, eb - sb));
 };
 
 std::string CSTTree::asQuery() {
