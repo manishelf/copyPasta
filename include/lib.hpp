@@ -404,6 +404,10 @@ private:
             std::shared_ptr<std::atomic<bool>> globalAbort, Payload &payload);
 };
 
+#define DECLARE_TS_LANG(name) extern "C" {      \
+    const TSLanguage *tree_sitter_##name(void); \
+}
+
 class TSEngine;
 
 class CSTTree {
