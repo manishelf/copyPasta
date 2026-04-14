@@ -49,7 +49,7 @@ int main(int argc, char** argv){
         (binary_expression)
       ]) @first_arg
       (class_literal) @second_arg
-      (#eq? @second_arg "Object[].class") 
+      (#eq? @second_arg "Integer.class") 
     )
   )
   )";
@@ -64,7 +64,7 @@ int main(int argc, char** argv){
 
   const TSLanguage *lang = tree_sitter_java();
 
-  walker.walk(pool, [lang, &qf_2, &qf_3](DirWalker::STATUS s, File f) {
+  walker.walk([lang, &qf_2, &qf_3](DirWalker::STATUS s, File f) {
 
     if(s ==DirWalker::QUEUING) return DirWalker::CONTINUE;
 
@@ -91,12 +91,15 @@ int main(int argc, char** argv){
         }
         if(match.captures[i].index == 1) continue;
         if(match.captures[i].index == 2) {
-           if(t.getText(n) != "Object[].class"){
+           if(t.getText(n) != "Integer.class"){
             break;
           }
-          
           TSRange change = TSEngine::getRange(n);
-          //edt.queue({FileEditor::OP::PRINT_CHANGE, change, {t.getText(n), ""}});
+          cout << r.getLine(change.start_point.row) << endl; 
+
+          //edt.queue({FileEditor::OP::PRINT_CHANGE_BEFORE, change, string(r.getLine(change.start_point.row))});
+          continue;
+
           thread_local TSQuery* q_3 = eng.queryNew(qf_3); 
 
           int context = 200; 
@@ -164,6 +167,7 @@ int main(int argc, char** argv){
                 if (type == "Character") {
                   wrapper = "StringUtilities.valueOf(";
                 }
+                /*
                 else 
                 if(type == "String") {
                   wrapper = "StringUtilities.valueOf(";
@@ -175,7 +179,7 @@ int main(int argc, char** argv){
                 else 
                 if (type == "Integer") {
                   wrapper = "NumberUtilities.toInteger(";
-                }
+                }*/
                 else 
                 {
                   return;
@@ -188,7 +192,7 @@ int main(int argc, char** argv){
 
                 edt.queue({FileEditor::OP::PRINT_CHANGE_BEFORE, loc0, newWrapper, "cast"});
                 edt.queue({FileEditor::OP::WRITE, loc0, newWrapper, "cast"});
-                //edt.queue({FileEditor::OP::PRINT_CHANGE_AFTER, loc0, newWrapper, "cast"});
+                edt.queue({FileEditor::OP::PRINT_CHANGE_AFTER, loc0, newWrapper, "cast"});
 
             });
           }

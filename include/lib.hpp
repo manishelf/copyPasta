@@ -1063,6 +1063,9 @@ FileWriter::FileWriter(const FileSnapshot snap) {
 
 FileWriter::FileWriter(std::string path) {
   FileReader tmp(path);
+  if(tmp.bufSize != tmp.getFile().size){
+    tmp.sync();
+  }
   snap = tmp.snapshot();
   file = tmp.getFile();
   rowOffsets = tmp.rowOffsets;
@@ -1071,6 +1074,9 @@ FileWriter::FileWriter(std::string path) {
 
 FileWriter::FileWriter(File f) {
   FileReader tmp(f);
+  if(tmp.bufSize != tmp.getFile().size){
+    tmp.sync();
+  }
   snap = tmp.snapshot();
   file = tmp.getFile();
   rowOffsets = tmp.rowOffsets;
