@@ -356,7 +356,7 @@ public:
   bool inverted = false;
   bool includeDotDir = false;
   bool obeyGitIgnore = true;
-  std::set<std::string> ignoring;
+  std::set<std::string> ignoring; // TODO: impl
   enum STATUS {
     QUEUING, // file queued for processing; may be skipped based on action
              // result
@@ -1219,7 +1219,7 @@ FileWriter &FileWriter::deleteRow(size_t row) {
   size_t row1Offset = rowOffsets[row];
   size_t row2Offset = rowOffsets[row + 1];
 
-  snap.cont.erase(row1Offset, row2Offset);
+  snap.cont.erase(row1Offset, row1Offset - row2Offset);
   modifySnap
 };
 
@@ -1289,18 +1289,7 @@ FileWriter &FileWriter::replace(std::string pattern,
                                 std::string templateOrResult, size_t nth,
                                 size_t opt) {
   FileReader snapReader(snap);
-  auto results = snapReader.find(pattern, true);
 
-  if (results.empty()) {
-    return *this;
-  }
-
-  // (a%b + b)%b for -10 % 100 = 90 && 10 % 100 = 10
-  nth = (nth % results.size() + results.size()) % results.size();
-  auto target = results[nth];
-
-  size_t start_offset = target.match.start_byte;
-  size_t end_offset = target.match.end_byte;
 
   int errornumber;
   PCRE2_SIZE erroroffset;
@@ -1313,7 +1302,22 @@ FileWriter &FileWriter::replace(std::string pattern,
                              std::to_string(erroroffset));
   }
 
+
   pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
+
+
+  auto results = snapReader.findWith(re, true);
+
+  if (results.empty()) {
+    return *this;
+  }
+
+  // (a%b + b)%b for -10 % 100 = 90 && 10 % 100 = 10
+  nth = (nth % results.size() + results.size()) % results.size();
+  auto target = results[nth];
+
+  size_t start_offset = target.match.start_byte;
+  size_t end_offset = target.match.end_byte;
 
   PCRE2_SIZE outLength = templateOrResult.length() * 2;
 
@@ -1733,7 +1737,7 @@ DirWalker::STATUS DirWalker::walk(git_repository *repo, Action &&action,
       fs::path parent = fs::absolute(path).parent_path();
       if (path == ".")
         parent = parent.parent_path();
-      if (parent != "/") {
+      if (parent.has_relative_path()) {
         DirWalker child(parent.string());
         child.level = level - 1;
         child.recursive = false;
@@ -1831,6 +1835,8 @@ void DirWalker::walk(git_repository *repo, ThreadPool &pool, Action &&action,
         child.level = level - 1;
         child.recursive = false;
         child.obeyGitIgnore = obeyGitIgnore;
+        child.includeDotDir = includeDotDir;
+        child.ignoring = ignoring;
         child.inverted = true;
 
         child.walk(repo, pool, action, abortSignal, payload);
