@@ -21,7 +21,7 @@ int main(int argc, char** argv){
   //lua_setglobal(L, "copy_pasta");
 
   Loader loader;
-  loader.get("java");
+  loader.get("javascript");
   
   if(argc > 1){
     if (luaL_dofile(L, argv[1]) != LUA_OK) {

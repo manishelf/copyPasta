@@ -13,8 +13,8 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)        
 set(BUILD_CLI OFF CACHE BOOL "" FORCE)        
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)   
-set(USE_SSH OFF CACHE BOOL "" FORCE)           # Disable SSH (requires libssh2)
-set(USE_HTTPS OFF CACHE BOOL "" FORCE)         # Disable OpenSSL/WinHTTP
+set(USE_SSH OFF CACHE BOOL "" FORCE)           # SSH (requires libssh2) for libgit2
+set(USE_HTTPS ON CACHE BOOL "" FORCE)         # OpenSSL/WinHTTP for libgit2
 set(USE_BUNDLED_ZLIB ON CACHE BOOL "" FORCE)   # Use internal zlib 
 set(USE_HTTP_PARSER "builtin" CACHE STRING "" FORCE)
 set(USE_GSSAPI OFF CACHE BOOL "" FORCE)        # Disable network auth
