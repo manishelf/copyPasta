@@ -383,6 +383,7 @@ public:
   bool includeDotDir = false;
   bool obeyGitIgnore = true;
   std::set<std::string> ignore;
+  std::set<std::string> matchExt;
 
   enum STATUS {
     QUEUING, // file queued for processing; may be skipped based on action result
@@ -398,7 +399,6 @@ public:
     CONTINUE = 0, // continue walk
     SKIP = 1,     // skip entering child dir
   };
- 
 
   DirWalker(std::string dir);
 
@@ -423,6 +423,8 @@ public:
     }
     return actRes;
   }
+
+  bool isPathIgnored(std::string path);
 
 
   template <typename Action> // Action is any callable
@@ -481,6 +483,7 @@ public:
 class TSEngine {
   const TSLanguage *lang;
   TSParser *parser;
+  std::map<std::string, TSQuery*> queryCache;
 
 public:
   TSEngine(const TSLanguage *lang);
@@ -1722,6 +1725,12 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
       continue;
     }
 
+    if(!matchExt.empty() 
+        && !file.isDir
+        && (matchExt.find(file.ext) == matchExt.end())){
+      continue;
+    }
+
     ACTION actRes = callAction(action, OPENED, file, repo, payload);
 
     if (actRes == ACTION::SKIP) {
@@ -1762,6 +1771,7 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
         child.includeDotDir = includeDotDir;
         child.ignore = ignore;
         child.inverted = true;
+        child.matchExt = matchExt;
 
         return child.walk(repo, action, payload);
       }
@@ -1812,24 +1822,33 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
       continue;
     }
 
-    ACTION actRes = callAction(action, QUEUING, file, repo, payload);
-
-    if (actRes == ACTION::STOP) {
-      return;
-    }
-    if (actRes == ACTION::SKIP)
+    if(!matchExt.empty() 
+        && !file.isDir
+        && (matchExt.find(file.ext) == matchExt.end())){
       continue;
-    if (actRes == ACTION::ABORT) {
-      abortSignal->store(true);
-      return;
     }
 
+    if(!file.isDir){
+      ACTION actRes = callAction(action, QUEUING, file, repo, payload);
+
+      if (actRes == ACTION::STOP) {
+        return;
+      }
+      if (actRes == ACTION::SKIP)
+        continue;
+      if (actRes == ACTION::ABORT) {
+        abortSignal->store(true);
+        return;
+      }
+    }
+ 
     if (!((file.name == ".") || (file.name == "..")) && file.isDir &&
         recursive && !inverted) {
       DirWalker child(file.path);
       child.recursive = recursive;
       child.obeyGitIgnore = obeyGitIgnore;
       child.inverted = inverted;
+      child.matchExt = matchExt;
 
       child.walk(repo, pool, action, abortSignal, payload);
     } else if (inverted && i == entries.size() - 1) {
@@ -1844,6 +1863,7 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
         child.includeDotDir = includeDotDir;
         child.ignore = ignore;
         child.inverted = true;
+        child.matchExt = matchExt;
 
         child.walk(repo, pool, action, abortSignal, payload);
       }
@@ -2080,6 +2100,7 @@ TSQuery *TSEngine::queryNew(std::string &queryExpr) {
   assert(error != TSQueryErrorField);
   assert(error != TSQueryErrorCapture);
   assert(error == TSQueryErrorNone);
+
 
   return query;
 };

@@ -7,9 +7,7 @@
 
 using namespace std;
 
-extern "C" {
-const TSLanguage *tree_sitter_java(void);
-}
+DECLARE_TS_LANG(java)
 
 int main(int argc, char** argv){
   
@@ -64,12 +62,10 @@ int main(int argc, char** argv){
 
   const TSLanguage *lang = tree_sitter_java();
 
+  walker.matchExt.insert(".java");
   walker.walk(pool, [lang, &qf_2, &qf_3](DirWalker::STATUS s, File f) {
 
-    if(s ==DirWalker::QUEUING) return DirWalker::CONTINUE;
-
-    if(f.ext != ".java")
-      return DirWalker::CONTINUE;
+    if(s == DirWalker::QUEUING) return DirWalker::CONTINUE;
 
     FileWriter w(f);
     FileReader r(f);
@@ -195,9 +191,9 @@ int main(int argc, char** argv){
         }
       }
     });
-    edt.queue({FileEditor::OP::VALIDATE_CST, {},{f.pathStr}});
-    edt.queue({FileEditor::OP::PRINT_ERRORS});
-    edt.queue({FileEditor::OP::SAVE});
+//    edt.queue({FileEditor::OP::VALIDATE_CST, {},{f.pathStr}});
+//    edt.queue({FileEditor::OP::PRINT_ERRORS});
+//    edt.queue({FileEditor::OP::SAVE});
 
     edt.apply(t, w);
     edt.reset();
