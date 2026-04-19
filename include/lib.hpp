@@ -1,6 +1,4 @@
 
-#include "git2/global.h"
-#include "git2/index.h"
 #include "git2/types.h"
 #include <algorithm>
 #include <assert.h>
@@ -71,6 +69,34 @@ public:
     finishCondition.wait(lock, [this] { return activeTasks.load() == 0; });
   }
 };
+
+class LibGit {
+
+  using RepoPtr = std::shared_ptr<git_repository>;
+  static RepoPtr make_repo(git_repository* repo);
+ 
+  RepoPtr repo;
+  std::string root;
+  std::mutex gitMutex;
+  static std::once_flag lib_git_init;
+  static void init();
+
+public:
+  LibGit(git_repository *repo);
+  ~LibGit();
+
+  static LibGit clone(std::string url, std::string path = ".");
+  static LibGit open(std::string path = ".");
+ 
+  bool isPathIgnored(fs::path path);
+  bool isPathIgnored(std::string path);
+  
+  void addIgnoreRule(std::string rule);
+
+  void add(fs::path &path);
+};
+
+
 
 class File {
 public:
@@ -356,10 +382,10 @@ public:
   bool inverted = false;
   bool includeDotDir = false;
   bool obeyGitIgnore = true;
-  std::set<std::string> ignoring; // TODO: impl
+  std::set<std::string> ignore;
+
   enum STATUS {
-    QUEUING, // file queued for processing; may be skipped based on action
-             // result
+    QUEUING, // file queued for processing; may be skipped based on action result
     OPENED,  // file is opened for processing
     STOPPED, // Stoped the walk for current dir
     ABORTED, // Stoped the walk altogether
@@ -372,6 +398,7 @@ public:
     CONTINUE = 0, // continue walk
     SKIP = 1,     // skip entering child dir
   };
+ 
 
   DirWalker(std::string dir);
 
@@ -381,7 +408,22 @@ public:
 
   ~DirWalker();
 
+
   // using WalkAction_t = std::function<ACTION(STATUS, File, void *payload)>;
+
+  template <typename Payload, typename Action>
+  static ACTION callAction(Action&& action, STATUS status, File file, LibGit& repo, Payload& payload){
+    ACTION actRes;
+    if constexpr (std::is_invocable_v<Action, STATUS, File, LibGit&, Payload &>) {
+      actRes = action(STATUS::OPENED, file, repo, payload);
+    } else if constexpr (std::is_invocable_v<Action, STATUS, File, LibGit&>) {
+      actRes = action(STATUS::OPENED, file, repo);
+    } else if constexpr (std::is_invocable_v<Action, STATUS, File>) {
+      actRes = action(STATUS::OPENED, file);
+    }
+    return actRes;
+  }
+
 
   template <typename Action> // Action is any callable
   STATUS walk(Action &&action);
@@ -397,11 +439,12 @@ public:
 
 private:
   template <typename Payload, typename Action>
-  STATUS walk(git_repository *repo, Action &&action, Payload &payload = NULL);
+  STATUS walk(LibGit& repo, Action &&action, Payload &payload = NULL);
 
+  using AbortSignal = std::shared_ptr<std::atomic<bool>>;
   template <typename Payload, typename Action>
-  void walk(git_repository *repo, ThreadPool &pool, Action &&action,
-            std::shared_ptr<std::atomic<bool>> globalAbort, Payload &payload);
+  void walk(LibGit& repo, ThreadPool &pool, Action &&action,
+            AbortSignal globalAbort, Payload &payload);
 };
 
 #define DECLARE_TS_LANG(name) extern "C" {      \
@@ -455,16 +498,6 @@ public:
   TSQuery *queryNew(std::string &queryExpr);
 };
 
-class LibGit {
-  git_repository *repo;
-  std::string root;
-  std::mutex gitMutex;
-
-public:
-  LibGit(git_repository *repo);
-
-  void add(fs::path &path);
-};
 
 #endif // LIB_H_
 
@@ -1661,19 +1694,16 @@ template <typename Action> DirWalker::STATUS DirWalker::walk(Action &&action) {
 
 template <typename Payload, typename Action>
 DirWalker::STATUS DirWalker::walk(Action &&action, Payload &payload) {
-  git_repository *repo = NULL;
-
-  git_libgit2_init();
-  git_repository_open_ext(&repo, path.c_str(), GIT_REPOSITORY_OPEN_NO_SEARCH,
-                          NULL);
+  LibGit repo = LibGit::open(path);
+  for(auto rule : ignore){
+    repo.addIgnoreRule(rule);
+  }
   auto res = walk(repo, action, payload);
-  git_repository_free(repo);
-  git_libgit2_shutdown();
   return res;
 };
 
 template <typename Payload, typename Action>
-DirWalker::STATUS DirWalker::walk(git_repository *repo, Action &&action,
+DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
                                   Payload &payload) {
 
   if (!_isValid)
@@ -1687,22 +1717,12 @@ DirWalker::STATUS DirWalker::walk(git_repository *repo, Action &&action,
   for (size_t i = 0; i < entries.size(); i++) {
     File file(entries[i]);
     file.level = level;
-    file.repo = repo;
 
-    if (obeyGitIgnore && repo) {
-      int ignored;
-      git_ignore_path_is_ignored(&ignored, repo, file.path.c_str());
-      if (ignored) {
-        continue;
-      }
+    if (obeyGitIgnore && repo.isPathIgnored(file.path)) {
+      continue;
     }
 
-    ACTION actRes;
-    if constexpr (std::is_invocable_v<Action, STATUS, File, Payload &>) {
-      actRes = action(STATUS::OPENED, file, payload);
-    } else if constexpr (std::is_invocable_v<Action, STATUS, File>) {
-      actRes = action(STATUS::OPENED, file);
-    }
+    ACTION actRes = callAction(action, OPENED, file, repo, payload);
 
     if (actRes == ACTION::SKIP) {
       continue;
@@ -1718,18 +1738,15 @@ DirWalker::STATUS DirWalker::walk(git_repository *repo, Action &&action,
       child.level = level + 1;
       child.recursive = recursive;
       child.obeyGitIgnore = obeyGitIgnore;
+      child.includeDotDir = includeDotDir;
+      child.ignore = ignore;
       child.inverted = inverted;
       STATUS res = child.walk(repo, action, payload);
 
       if (res == STATUS::ABORTED) {
         return res;
       } else if (res == STATUS::FAILED) {
-        ACTION actRes;
-        if constexpr (std::is_invocable_v<Action, STATUS, File, Payload &>) {
-          actRes = action(STATUS::OPENED, file, payload);
-        } else if constexpr (std::is_invocable_v<Action, STATUS, File>) {
-          actRes = action(STATUS::OPENED, file);
-        }
+        ACTION actRes = callAction(action, FAILED, file, repo, payload);
       }
     }
 
@@ -1742,6 +1759,8 @@ DirWalker::STATUS DirWalker::walk(git_repository *repo, Action &&action,
         child.level = level - 1;
         child.recursive = false;
         child.obeyGitIgnore = obeyGitIgnore;
+        child.includeDotDir = includeDotDir;
+        child.ignore = ignore;
         child.inverted = true;
 
         return child.walk(repo, action, payload);
@@ -1761,23 +1780,20 @@ void DirWalker::walk(ThreadPool &pool, Action &&action) {
 template <typename Payload, typename Action>
 void DirWalker::walk(ThreadPool &pool, Action &&action, Payload &payload) {
 
-  std::shared_ptr<std::atomic<bool>> abortSignal =
+  AbortSignal abortSignal =
       std::make_shared<std::atomic<bool>>(false);
 
-  git_repository *repo = NULL;
-  git_libgit2_init();
-  git_repository_open_ext(&repo, path.c_str(), GIT_REPOSITORY_OPEN_NO_SEARCH,
-                          NULL);
-  walk(repo, pool, action, abortSignal, payload);
+  LibGit repo = LibGit::open(path);
+  for(auto rule : ignore){
+    repo.addIgnoreRule(rule);
+  }
 
-  // TODO: issue with use after free for child
-  // git_repository_free(repo);
-  // git_libgit2_shutdown();
+  walk(repo, pool, action, abortSignal, payload);
 }
 
 template <typename Payload, typename Action>
-void DirWalker::walk(git_repository *repo, ThreadPool &pool, Action &&action,
-                     std::shared_ptr<std::atomic<bool>> abortSignal,
+void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
+                     AbortSignal abortSignal,
                      Payload &payload) {
 
   std::vector<fs::directory_entry> entries(fs::directory_iterator(this->path),
@@ -1786,27 +1802,17 @@ void DirWalker::walk(git_repository *repo, ThreadPool &pool, Action &&action,
   for (int i = 0; i < entries.size(); i++) {
     File file(entries[i]);
     file.level = level;
-    file.repo = repo;
 
     // If any thread previously returned ABORT, quit now
     if (abortSignal->load()) {
       return;
     }
 
-    if (obeyGitIgnore && repo) {
-      int ignored;
-      git_ignore_path_is_ignored(&ignored, repo, file.path.c_str());
-      if (ignored) {
-        continue;
-      }
+    if (obeyGitIgnore && repo.isPathIgnored(file.path)) {
+      continue;
     }
 
-    ACTION actRes;
-    if constexpr (std::is_invocable_v<Action, STATUS, File, Payload &>) {
-      actRes = action(STATUS::QUEUING, file, payload);
-    } else if constexpr (std::is_invocable_v<Action, STATUS, File>) {
-      actRes = action(STATUS::QUEUING, file);
-    }
+    ACTION actRes = callAction(action, QUEUING, file, repo, payload);
 
     if (actRes == ACTION::STOP) {
       return;
@@ -1836,7 +1842,7 @@ void DirWalker::walk(git_repository *repo, ThreadPool &pool, Action &&action,
         child.recursive = false;
         child.obeyGitIgnore = obeyGitIgnore;
         child.includeDotDir = includeDotDir;
-        child.ignoring = ignoring;
+        child.ignore = ignore;
         child.inverted = true;
 
         child.walk(repo, pool, action, abortSignal, payload);
@@ -1844,16 +1850,12 @@ void DirWalker::walk(git_repository *repo, ThreadPool &pool, Action &&action,
     } else {
 
       // create a anonlymous class that has action and file in constructor
-      pool.enqueue([action, file, abortSignal, &payload]() {
+      pool.enqueue([action, file, &repo, abortSignal, &payload]() {
         if (abortSignal->load())
           return;
 
-        ACTION actRes;
-        if constexpr (std::is_invocable_v<Action, STATUS, File, Payload &>) {
-          actRes = action(STATUS::OPENED, file, payload);
-        } else if constexpr (std::is_invocable_v<Action, STATUS, File>) {
-          actRes = action(STATUS::OPENED, file);
-        }
+        ACTION actRes = callAction(action, OPENED, file, repo, payload);
+
         if (actRes == ACTION::ABORT) {
           abortSignal->store(true);
         }
@@ -2094,10 +2096,68 @@ TSRange TSEngine::getRange(TSNode n){
 
 // LibGit
 
+std::once_flag LibGit::lib_git_init; // needs a global instance to track init
+                                    
+void LibGit::init(){
+    std::call_once(lib_git_init, git_libgit2_init);
+}
+
 LibGit::LibGit(git_repository *repo) {
   assert(repo != nullptr);
-  this->repo = repo;
+  init();
+  this->repo = make_repo(repo);
   root = git_repository_workdir(repo);
+}
+
+LibGit::~LibGit(){}
+
+LibGit::RepoPtr LibGit::make_repo(git_repository *raw){
+    return RepoPtr(raw, [](git_repository* r) {
+        git_repository_free(r); 
+        // this will free when the last instance of LibGit using this is delete
+        // also this is thread safe
+    });
+}
+
+LibGit LibGit::clone(std::string url, std::string path){
+  init();
+  try{
+    return open(path);
+  }catch(std::runtime_error e){
+    git_repository* repo = nullptr;
+    git_clone_options opts = GIT_CLONE_OPTIONS_INIT;
+    if(git_clone(&repo, url.c_str(), path.c_str(), NULL) < 0){
+      auto e = git_error_last();
+      throw std::runtime_error(std::string("Unable to clone repository at " + url + " due to :") + 
+                        ((e && e->message) ? e->message : "Unknown"));
+    }
+    return LibGit(repo);
+  }
+}
+
+LibGit LibGit::open(std::string path){
+  git_repository* repo = nullptr;
+  init();
+  if (git_repository_open(&repo, path.c_str()) < 0) {
+    const git_error* e = git_error_last();
+
+    throw std::runtime_error(std::string("Unable to open repository at " + path + " due to : ") +
+      (e && e->message ? e->message : "Unknown"));
+  }
+
+  return LibGit(repo);
+}
+
+bool LibGit::isPathIgnored(fs::path path){
+  return isPathIgnored(path.string());
+}
+
+bool LibGit::isPathIgnored(std::string path){
+  int ignored;
+  if(git_ignore_path_is_ignored(&ignored, repo.get(), path.c_str()) < 0){
+    return false;
+  }
+  return ignored == 1;
 }
 
 void LibGit::add(fs::path &path) {
@@ -2107,10 +2167,15 @@ void LibGit::add(fs::path &path) {
 
   std::lock_guard<std::mutex> lock(gitMutex);
   
-  git_repository_index(&index, this->repo);
+  git_repository_index(&index, repo.get());
   git_index_add_bypath(index, relPath.c_str());
   git_index_write(index);
   git_index_free(index);
 };
+
+void LibGit::addIgnoreRule(std::string rule){
+  git_ignore_add_rule(repo.get(), rule.c_str());
+}
+
 
 #endif // LIB_IMPLEMENTATION
