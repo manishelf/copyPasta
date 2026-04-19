@@ -2177,7 +2177,17 @@ LibGit LibGit::clone(std::string url, std::string path, bool shallow){
     if(shallow){
       opts.fetch_opts.depth = 1;
     }
-    
+
+    auto cloneProgressCb = 
+    [](const git_indexer_progress *stats, void *payload) -> int {
+      printf("Cloning progrss %d/%d objects\r",
+          stats->received_objects,
+          stats->total_objects);
+      printf("\n");
+      return 0;
+    };
+    opts.fetch_opts.callbacks.transfer_progress = cloneProgressCb;
+
     if(git_clone(&repo, url.c_str(), path.c_str(), &opts) < 0){
       auto e = git_error_last();
       throw std::runtime_error(std::string("Unable to clone repository at " + url + " due to :") + 
