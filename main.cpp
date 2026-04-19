@@ -1,4 +1,5 @@
 #include <lib.hpp>
+#include <loader.hpp>
 #include <tree_sitter/api.h>
 
 using namespace std;
@@ -18,6 +19,9 @@ int main(int argc, char** argv){
   luaL_openlibs(L);
 
   //lua_setglobal(L, "copy_pasta");
+
+  Loader loader;
+  loader.get("java");
   
   if(argc > 1){
     if (luaL_dofile(L, argv[1]) != LUA_OK) {

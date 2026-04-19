@@ -85,7 +85,7 @@ public:
   LibGit(git_repository *repo);
   ~LibGit();
 
-  static LibGit clone(std::string url, std::string path = ".");
+  static LibGit clone(std::string url, std::string path = ".", bool shallow = false);
   static LibGit open(std::string path = ".");
  
   bool isPathIgnored(fs::path path);
@@ -188,9 +188,10 @@ public:
   } MatchResult;
 
   std::vector<MatchResult> find(std::string pattern, bool regex = false,
-                                size_t opt = PCRE2_CASELESS);
+                                uint32_t opt_compile = PCRE2_CASELESS);
   std::vector<MatchResult> findWith(pcre2_code *re,
-                                    size_t opt = PCRE2_CASELESS);
+                                    uint32_t opt_match = PCRE2_NO_UTF_CHECK); // some compile 
+                                                                              // options allowed 
   TSPoint getP(size_t byteOffset);
 
   const FileSnapshot snapshot();
@@ -294,9 +295,9 @@ public:
   FileWriter &replace(std::string pattern, std::string templateOrResult,
                       size_t nth_occ = 0, // 0 for first 1 for second and
                                           //-1 for last, -2 for last second and so on
-                      size_t opt = PCRE2_SUBSTITUTE_GLOBAL | PCRE2_SUBSTITUTE_EXTENDED);
+                      uint32_t opt = PCRE2_SUBSTITUTE_GLOBAL | PCRE2_SUBSTITUTE_EXTENDED);
   FileWriter &replaceAll(std::string pattern, std::string templateOrResult,
-                         size_t opt = PCRE2_SUBSTITUTE_GLOBAL |
+                         uint32_t opt = PCRE2_SUBSTITUTE_GLOBAL |
                                       PCRE2_SUBSTITUTE_EXTENDED);
 };
 
@@ -382,6 +383,7 @@ public:
   bool inverted = false;
   bool includeDotDir = false;
   bool obeyGitIgnore = true;
+  bool filesOnly = true;
   std::set<std::string> ignore;
   std::set<std::string> matchExt;
 
@@ -402,6 +404,8 @@ public:
 
   DirWalker(std::string dir);
 
+  void copyConfig(DirWalker* from);
+
   bool isValid() { return _isValid; }
 
   std::vector<File> allChildren();
@@ -420,6 +424,8 @@ public:
       actRes = action(STATUS::OPENED, file, repo);
     } else if constexpr (std::is_invocable_v<Action, STATUS, File>) {
       actRes = action(STATUS::OPENED, file);
+    } else{
+      throw std::invalid_argument("Invalid signature for walk action");
     }
     return actRes;
   }
@@ -834,15 +840,17 @@ const char *FileReader::tsRead(void *payload, uint32_t byte_index,
 }
 
 std::vector<FileReader::MatchResult> FileReader::find(std::string pattern,
-                                                      bool regex, size_t opt) {
+                                                      bool regex, uint32_t opt) {
 
   std::vector<MatchResult> matches;
 
   if (regex) {
     PCRE2_SPTR pcrePattern = (PCRE2_SPTR)pattern.c_str();
 
+
     int errornumber;
     PCRE2_SIZE erroroffset;
+
 
     pcre2_code *re = pcre2_compile(pcrePattern, PCRE2_ZERO_TERMINATED, opt,
                                    &errornumber, &erroroffset, NULL);
@@ -850,6 +858,7 @@ std::vector<FileReader::MatchResult> FileReader::find(std::string pattern,
     if (re == NULL) {
       PCRE2_UCHAR buffer[256];
       pcre2_get_error_message(errornumber, buffer, sizeof(buffer));
+      std::cout << "PCRE ERROR compiling : " << buffer << std::endl;
       throw std::invalid_argument(
           "could not compile provided regex for fn find " + pattern + " - " +
           file.pathStr);
@@ -861,7 +870,7 @@ std::vector<FileReader::MatchResult> FileReader::find(std::string pattern,
       if (sync().cont == nullptr)
         return matches;
 
-    matches = findWith(re, opt);
+    matches = findWith(re);
 
     pcre2_code_free(re);
 
@@ -898,7 +907,7 @@ std::vector<FileReader::MatchResult> FileReader::find(std::string pattern,
 };
 
 std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
-                                                          size_t opt) {
+                                                          uint32_t opt) {
 
   std::vector<MatchResult> matches;
 
@@ -923,6 +932,14 @@ std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
       break;
 
     if (rc < 0) {
+      PCRE2_UCHAR buffer[256];
+      int len = pcre2_get_error_message(rc, buffer, sizeof(buffer));
+
+      if (len > 0) {
+        std::cerr << "PCRE2 error: " << buffer << "\n";
+      } else {
+        std::cerr << "Unknown PCRE2 error: " << rc << "\n";
+      }
       pcre2_match_data_free(match_data);
       throw std::runtime_error("PCRE2 match error");
     }
@@ -1272,7 +1289,7 @@ FileWriter &FileWriter::insertRow(size_t row, const std::string &cont) {
 };
 
 FileWriter &FileWriter::replaceAll(std::string pattern,
-                                   std::string templateOrResult, size_t opt) {
+                                   std::string templateOrResult, uint32_t opt) {
 
   int errornumber;
   PCRE2_SIZE erroroffset;
@@ -1323,7 +1340,7 @@ substitute:
 
 FileWriter &FileWriter::replace(std::string pattern,
                                 std::string templateOrResult, size_t nth,
-                                size_t opt) {
+                                uint32_t opt) {
   FileReader snapReader(snap);
 
 
@@ -1688,6 +1705,16 @@ DirWalker::DirWalker(std::string dir) {
   _isValid = fs::exists(dir);
 };
 
+void DirWalker::copyConfig(DirWalker* other){  
+  recursive     = other->recursive;
+  obeyGitIgnore = other->obeyGitIgnore;
+  includeDotDir = other->includeDotDir;
+  ignore        = other->ignore;
+  inverted      = other->inverted;
+  matchExt      = other->matchExt;
+  filesOnly     = other->filesOnly;
+}
+
 DirWalker::~DirWalker() {};
 
 template <typename Action> DirWalker::STATUS DirWalker::walk(Action &&action) {
@@ -1720,7 +1747,7 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
   for (size_t i = 0; i < entries.size(); i++) {
     File file(entries[i]);
     file.level = level;
-
+    
     if (obeyGitIgnore && repo.isPathIgnored(file.path)) {
       continue;
     }
@@ -1730,8 +1757,13 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
         && (matchExt.find(file.ext) == matchExt.end())){
       continue;
     }
-
-    ACTION actRes = callAction(action, OPENED, file, repo, payload);
+  
+    ACTION actRes;
+    if(!filesOnly || !file.isDir){
+      actRes = callAction(action, OPENED, file, repo, payload);
+    } else{
+      actRes = ACTION::CONTINUE;
+    }
 
     if (actRes == ACTION::SKIP) {
       continue;
@@ -1740,16 +1772,12 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
     } else if (actRes == ACTION::ABORT) {
       return STATUS::ABORTED;
     } else if (actRes == ACTION::CONTINUE &&
-               !((file.name == ".") || (file.name == "..")) && file.isDir &&
-               recursive && !inverted) {
+        !((file.name == ".") || (file.name == "..")) && file.isDir &&
+        recursive && !inverted) {
 
       DirWalker child(file.pathStr);
       child.level = level + 1;
-      child.recursive = recursive;
-      child.obeyGitIgnore = obeyGitIgnore;
-      child.includeDotDir = includeDotDir;
-      child.ignore = ignore;
-      child.inverted = inverted;
+      child.copyConfig(this);
       STATUS res = child.walk(repo, action, payload);
 
       if (res == STATUS::ABORTED) {
@@ -1757,6 +1785,7 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
       } else if (res == STATUS::FAILED) {
         ACTION actRes = callAction(action, FAILED, file, repo, payload);
       }
+
     }
 
     if (inverted && i == entries.size() - 1) {
@@ -1765,13 +1794,10 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
         parent = parent.parent_path();
       if (parent.has_relative_path()) {
         DirWalker child(parent.string());
+        child.copyConfig(this);
         child.level = level - 1;
         child.recursive = false;
-        child.obeyGitIgnore = obeyGitIgnore;
-        child.includeDotDir = includeDotDir;
-        child.ignore = ignore;
         child.inverted = true;
-        child.matchExt = matchExt;
 
         return child.walk(repo, action, payload);
       }
@@ -1828,8 +1854,14 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
       continue;
     }
 
-    if(!file.isDir){
-      ACTION actRes = callAction(action, QUEUING, file, repo, payload);
+    if(!filesOnly || !file.isDir){
+
+      ACTION actRes;
+      if(!filesOnly || !file.isDir){
+        actRes = callAction(action, QUEUING, file, repo, payload);
+      } else{
+        actRes = ACTION::CONTINUE;
+      }
 
       if (actRes == ACTION::STOP) {
         return;
@@ -1845,25 +1877,19 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
     if (!((file.name == ".") || (file.name == "..")) && file.isDir &&
         recursive && !inverted) {
       DirWalker child(file.path);
-      child.recursive = recursive;
-      child.obeyGitIgnore = obeyGitIgnore;
-      child.inverted = inverted;
-      child.matchExt = matchExt;
-
+      child.copyConfig(this);
+      child.level = level + 1;
       child.walk(repo, pool, action, abortSignal, payload);
     } else if (inverted && i == entries.size() - 1) {
       fs::path parent = fs::absolute(path).parent_path();
       if (path == ".")
         parent = parent.parent_path();
-      if (parent != "/") {
+      if (parent.has_relative_path()) {
         DirWalker child(parent.string());
+        child.copyConfig(this);
         child.level = level - 1;
         child.recursive = false;
-        child.obeyGitIgnore = obeyGitIgnore;
-        child.includeDotDir = includeDotDir;
-        child.ignore = ignore;
         child.inverted = true;
-        child.matchExt = matchExt;
 
         child.walk(repo, pool, action, abortSignal, payload);
       }
@@ -2140,14 +2166,19 @@ LibGit::RepoPtr LibGit::make_repo(git_repository *raw){
     });
 }
 
-LibGit LibGit::clone(std::string url, std::string path){
+LibGit LibGit::clone(std::string url, std::string path, bool shallow){
   init();
   try{
     return open(path);
   }catch(std::runtime_error e){
     git_repository* repo = nullptr;
     git_clone_options opts = GIT_CLONE_OPTIONS_INIT;
-    if(git_clone(&repo, url.c_str(), path.c_str(), NULL) < 0){
+    
+    if(shallow){
+      opts.fetch_opts.depth = 1;
+    }
+    
+    if(git_clone(&repo, url.c_str(), path.c_str(), &opts) < 0){
       auto e = git_error_last();
       throw std::runtime_error(std::string("Unable to clone repository at " + url + " due to :") + 
                         ((e && e->message) ? e->message : "Unknown"));

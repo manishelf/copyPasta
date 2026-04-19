@@ -1,3 +1,0 @@
-This is inside xyz->2.txt
-
-Sample text goes here for 2.txt

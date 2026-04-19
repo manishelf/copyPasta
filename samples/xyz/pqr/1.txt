@@ -1,3 +1,0 @@
-This is inside xyz->pqr->1.txt
-
-Sample text goes here for 1.txt
