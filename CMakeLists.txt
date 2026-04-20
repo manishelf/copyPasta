@@ -47,11 +47,15 @@ add_executable(
 add_subdirectory(deps/libgit2)
 add_subdirectory(deps/pcre2)
 add_subdirectory(deps/tree-sitter)
-add_subdirectory(deps/tree-sitter-parsers/tree-sitter-java)
 add_subdirectory(deps/lua-5.5.0)
 
 
-add_dependencies(copyPasta libgit2 pcre2-8  tree-sitter tree-sitter-java lua)
+add_dependencies(
+    copyPasta
+    libgit2
+    pcre2-8
+    tree-sitter
+    lua)
 
 find_package(Threads REQUIRED)
 
@@ -62,7 +66,6 @@ target_include_directories(copyPasta PUBLIC
     ${CMAKE_SOURCE_DIR}/deps/libgit2/include
     ${CMAKE_SOURCE_DIR}/deps/pcre2/src
     ${CMAKE_SOURCE_DIR}/deps/tree-sitter/lib/include
-    ${CMAKE_SOURCE_DIR}/deps/tree-sitter-parsers/tree-sitter-java/src
     ${CMAKE_SOURCE_DIR}/deps/lua-5.5.0/src
 )
 
@@ -72,7 +75,6 @@ target_link_libraries(copyPasta PUBLIC
   libgit2 libgit2package
   pcre2-8
   tree-sitter
-  tree-sitter-java
   lua
   Threads::Threads
 )

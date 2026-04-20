@@ -2,10 +2,6 @@
 	path = deps/tree-sitter
 	url = https://github.com/tree-sitter/tree-sitter
 	shallow = true
-[submodule "tree-sitter-java"]
-	path = deps/tree-sitter-parsers/tree-sitter-java
-	url = https://github.com/tree-sitter/tree-sitter-java
-	shallow = true
 [submodule "deps/libgit2"]
 	path = deps/libgit2
 	url = https://github.com/libgit2/libgit2
