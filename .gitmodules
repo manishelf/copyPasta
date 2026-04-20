@@ -13,3 +13,6 @@
 [submodule "deps/tree-sitter-wiki"]
 	path = deps/tree-sitter-wiki
 	url = https://github.com/tree-sitter/tree-sitter.wiki.git
+[submodule "deps/LuaBridge"]
+	path = deps/LuaBridge
+	url = https://github.com/vinniefalco/LuaBridge/

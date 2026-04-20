@@ -152,7 +152,7 @@ TSLang Loader::get(std::string lang){
   
   std::string repoPath = std::string(PARSER_PATH)+"/tree-sitter-"+lang;
   std::cout << "Cloning " << gitUrl << std::endl;
-  LibGit::clone(gitUrl, repoPath);
+  LibGit::clone(gitUrl, repoPath, true);
 
   // TODO: make this cross platform and portable
   // or maybe make is fine?

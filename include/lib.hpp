@@ -1,4 +1,3 @@
-
 #include "git2/types.h"
 #include <algorithm>
 #include <assert.h>
