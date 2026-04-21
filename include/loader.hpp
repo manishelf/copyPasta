@@ -19,6 +19,11 @@
   #define LIB_HANDLE void*
 #endif
 
+/*
+use prebuilt binaries from release of https://github.com/casualjim/breeze-tree-sitter-parsers
+and put into depa/tree-sitter-parsers/tree-sitter-{lang} if make and c compiler not available i.e on windows
+*/
+
 // API
 #define LIST_OF_PARSERS_PAGE "https://github.com/tree-sitter/tree-sitter/wiki/List-of-parsers"
 #define LIST_OF_PARSER_PATH "../deps/tree-sitter-wiki/List-of-parsers.md"
