@@ -36,67 +36,6 @@ namespace fs = std::filesystem;
 #ifndef LIB_H_
 #define LIB_H_
 
-class ThreadPool {
-  std::vector<std::thread> workers;
-  std::queue<std::function<void()>> task;
-  std::mutex queueMutex;
-  std::condition_variable enqueueCondition;
-  std::mutex finishMutex;
-  std::condition_variable finishCondition;
-
-  bool stop;
-  size_t maxCount;
-  std::atomic<size_t> activeTasks{0}; // Tracks pending + running tasks
-
-public:
-  ThreadPool(size_t maxCount = std::thread::hardware_concurrency());
-  ~ThreadPool();
-
-  // pass in a anonymous class and the action in the constructor will be
-  // performed
-  template <class F> void enqueue(F &&f);
-
-  bool isBusy() { return activeTasks > 0; }
-
-  // helper to block until all tasks are finished
-  // main thread will yield until all threads are done
-  void waitUntilFinished() {
-    // while (activeTasks > 0) {
-    // std::this_thread::yield();
-    //}
-    std::unique_lock<std::mutex> lock(finishMutex);
-    finishCondition.wait(lock, [this] { return activeTasks.load() == 0; });
-  }
-};
-
-class LibGit {
-
-  using RepoPtr = std::shared_ptr<git_repository>;
-  static RepoPtr make_repo(git_repository* repo);
- 
-  RepoPtr repo;
-  std::string root;
-  std::mutex gitMutex;
-  static std::once_flag lib_git_init;
-  static void init();
-
-public:
-  LibGit(git_repository *repo);
-  ~LibGit();
-
-  static LibGit clone(std::string url, std::string path = ".", bool shallow = false);
-  static LibGit open(std::string path = ".");
- 
-  bool isPathIgnored(fs::path path);
-  bool isPathIgnored(std::string path);
-  
-  void addIgnoreRule(std::string rule);
-
-  void add(fs::path &path);
-};
-
-
-
 class File {
 public:
   std::string pathStr;
@@ -120,7 +59,7 @@ public:
 
   void sync();
 
-  static bool deleteFile(File &target); // deletes entry file and commits
+  static int deleteFile(File &target); // deletes entry file and commits
   static int deleteDir(File &target);   // deletes entry dir and commits returns
                                         // number of children deleted
   static bool rename(File &target, std::string name); // moves or renames
@@ -143,11 +82,19 @@ class FileReader {
   static const char *tsRead(void *payload, uint32_t byte_index, TSPoint point,
                             uint32_t *bytes_read);
 
+  std::vector<char> _buf;
+
   char *buf = nullptr;
 
+  bool rowOffsetsValid = false;
+
+  static TSRange makeRange(size_t start, size_t end, std::vector<size_t> rowOffsets);
+ 
 public:
   size_t level = 0;
+
   std::vector<size_t> rowOffsets;
+
   size_t bufStart;
   size_t bufSize;
   static constexpr size_t defaultBlockSize = 1024 * 1024;
@@ -186,8 +133,13 @@ public:
     std::vector<TSRange> captures;
   } MatchResult;
 
-  std::vector<MatchResult> find(std::string pattern, bool regex = false,
+  std::vector<MatchResult> find(std::string pattern, bool regex = true,
                                 uint32_t opt_compile = PCRE2_CASELESS);
+  
+  static std::vector<MatchResult> findIn(const std::string &text, std::string pattern,
+                                  bool regex = true,
+                                  uint32_t opt_compile = PCRE2_CASELESS);
+ 
   std::vector<MatchResult> findWith(pcre2_code *re,
                                     uint32_t opt_match = PCRE2_NO_UTF_CHECK); // some compile 
                                                                               // options allowed 
@@ -255,7 +207,8 @@ class FileWriter {
   bool _isValid;
   std::ofstream oFileStream;
   FileSnapshot snap;
-
+  bool rowOffsetsValid = false;
+ 
 public:
   FileWriter(const FileSnapshot snap);
   FileWriter(std::string path);
@@ -299,6 +252,44 @@ public:
                          uint32_t opt = PCRE2_SUBSTITUTE_GLOBAL |
                                       PCRE2_SUBSTITUTE_EXTENDED);
 };
+
+class LibGit {
+
+  using RepoPtr = std::shared_ptr<git_repository>;
+  static RepoPtr make_repo(git_repository* repo);
+ 
+  RepoPtr repo;
+  std::string root;
+  std::mutex gitMutex;
+  static std::once_flag lib_git_init;
+  static void init();
+
+public:
+  LibGit(git_repository *repo);
+  ~LibGit();
+
+  static LibGit clone(std::string url, std::string path = ".", bool shallow = false);
+  static LibGit open(std::string path = ".");
+ 
+  bool isPathIgnored(fs::path path);
+  bool isPathIgnored(std::string path);
+  
+  void addIgnoreRule(std::string rule);
+
+  void add(fs::path &path);
+
+  // TODO:
+  void checkout(std::string blobId);
+  void branchCreate(std::string name);
+  void setSignature(std::string email);
+  void commit(std::string message);
+  void pull();
+  std::vector<git_diff> diff();
+  std::vector<git_diff> diff(std::string blobId);
+};
+
+
+// FileEditor
 
 // order based on increasing precedence 
 #define FOREACH_OP(OP)                                                         \
@@ -364,6 +355,8 @@ public:
   void reset();
   std::vector<Error> getConflictErrors();
   std::vector<Error> apply(CSTTree &original, FileWriter &writer);
+  //TODO: with some call back , each chage one by one
+  void step();
 
 private:
   std::vector<Edit> operations;
@@ -372,6 +365,7 @@ private:
   static TSPoint getNewEndPoint(const Edit& edit);
 };
 
+class ThreadPool;
 class DirWalker {
   bool _isValid;
 
@@ -464,12 +458,14 @@ class CSTTree {
 private:
   TSTree *tree;
   std::string_view source;
+  std::string _source;
   TSEngine &parent;
 
 public:
   friend TSEngine;
 
   CSTTree(TSTree *tree, std::string_view source, TSEngine &parent);
+  CSTTree(TSTree *tree, std::string source, TSEngine &parent);
   ~CSTTree();
 
   std::string sTree();
@@ -483,12 +479,15 @@ public:
   void edit(TSInputEdit edit, const std::string &source);
 
   std::vector<TSRange> getErrors();
+
+  // Returns a non-owning pointer to the underlying TSTree.
+  // Use ts_tree_copy() if you need an independent lifetime.
+  TSTree *getRawTree() const { return tree; }
 };
 
 class TSEngine {
   const TSLanguage *lang;
   TSParser *parser;
-  std::map<std::string, TSQuery*> queryCache;
 
 public:
   TSEngine(const TSLanguage *lang);
@@ -500,12 +499,101 @@ public:
 
   static TSRange getRange(TSNode n);
 
-  // TSQuery is not thread safe although it is immutable
-  // unpredictable cursors
-  // use thread_local
+  // Returns a cached TSQuery*.  The pointer is valid for the lifetime of this
+  // TSEngine.  Callers must NOT call ts_query_delete on the returned pointer.
   TSQuery *queryNew(std::string &queryExpr);
 };
 
+class ThreadPool {
+  std::vector<std::thread> workers;
+  std::queue<std::function<void()>> task;
+  std::mutex queueMutex;
+  std::condition_variable enqueueCondition;
+  std::mutex finishMutex;
+  std::condition_variable finishCondition;
+
+  bool stop;
+  size_t maxCount;
+  std::atomic<size_t> activeTasks{0}; // Tracks pending + running tasks
+
+public:
+  ThreadPool(size_t maxCount = std::thread::hardware_concurrency());
+  ~ThreadPool();
+
+  // pass in a anonymous class and the action in the constructor will be
+  // performed
+  template <class F> void enqueue(F &&f);
+
+  bool isBusy() { return activeTasks > 0; }
+
+  // helper to block until all tasks are finished
+  // main thread will yield until all threads are done
+  void waitUntilFinished() {
+    // while (activeTasks > 0) {
+    // std::this_thread::yield();
+    //}
+    std::unique_lock<std::mutex> lock(finishMutex);
+    finishCondition.wait(lock, [this] { return activeTasks.load() == 0; });
+  }
+};
+
+// Thread-safe cache for compiled PCRE2 patterns.
+// Patterns are keyed by (pattern_string, compile_options).
+// The compiled pcre2_code* is owned by the cache for its lifetime.
+// Callers must NOT call pcre2_code_free on pointers returned by get().
+class PcreCache {
+  struct Key {
+    std::string pattern;
+    uint32_t    opts;
+    bool operator<(const Key &o) const {
+      return pattern < o.pattern || (pattern == o.pattern && opts < o.opts);
+    }
+  };
+  std::map<Key, pcre2_code *> cache;
+  mutable std::mutex mtx;
+
+public:
+  PcreCache(){}
+
+  ~PcreCache() {
+    for (auto &[k, re] : cache)
+      pcre2_code_free(re);
+  }
+
+  pcre2_code *get(const std::string &pattern, uint32_t opts = PCRE2_CASELESS);
+
+  // thread safe
+  static PcreCache &global() {
+    static PcreCache instance;
+    return instance;
+  }
+};
+
+// Thread-safe pool for persistent TSEngine instances per language
+class TSEnginePool {
+  std::mutex mtx;
+  std::map<const TSLanguage*, std::shared_ptr<TSEngine>> engines;
+public:
+  std::shared_ptr<TSEngine> get(const TSLanguage* lang);
+  // thread safe
+  static TSEnginePool &global() {
+    static TSEnginePool instance;
+    return instance;
+  }
+};
+
+// Thread-safe query cache for reusing TSQuery* per engine and pattern
+class QueryCache {
+  std::mutex mtx;
+  std::map<std::pair<const TSEngine*, std::string>, TSQuery*> cache;
+public:
+  TSQuery* get(TSEngine* engine, const std::string& pattern); 
+  // thread safe
+  static QueryCache &global() {
+    static QueryCache instance;
+    return instance;
+  }
+};
 
 #endif // LIB_H_
 
@@ -575,15 +663,15 @@ void File::sync() {
   path = dir_entry.path();
 };
 
-bool File::deleteFile(File &target) {
+int File::deleteFile(File &target) {
   if (target.isDir)
-    return false;
+    return -1;
   return fs::remove(target.path);
 };
 
 int File::deleteDir(File &target) {
   if (!target.isDir)
-    return -1;
+    return false;
   return fs::remove_all(target.path);
 };
 
@@ -600,13 +688,16 @@ File::~File() {};
 
 // FileReader
 
-#define UPDATE_ROW_OFFSETS(data, len)                                          \
-  rowOffsets.clear();                                                          \
-  rowOffsets.push_back(0);                                                     \
-  for (size_t i = 0; i < (len); ++i) {                                         \
-    if ((data)[i] == '\n') {                                                   \
-      rowOffsets.push_back(i + 1);                                             \
-    }                                                                          \
+#define UPDATE_ROW_OFFSETS(data, len)                                            \
+  if(!rowOffsetsValid){                                                          \
+    rowOffsets.clear();                                                          \
+    rowOffsets.push_back(0);                                                     \
+    for (size_t i = 0; i < (len); ++i) {                                         \
+      if ((data)[i] == '\n') {                                                   \
+        rowOffsets.push_back(i + 1);                                             \
+      }                                                                          \
+    }                                                                            \
+    rowOffsetsValid = true;                                                      \
   }
 
 FileReader::FileReader(File file, size_t blockSize)
@@ -640,6 +731,7 @@ FileReader::FileReader(const FileSnapshot snap, size_t blockSize) {
   this->blockSize = blockSize;
   std::memcpy(buf, snap.cont.data(), snap.cont.length());
   _isValid = true;
+  rowOffsetsValid = false;
   UPDATE_ROW_OFFSETS(snap.cont, snap.cont.length());
 };
 
@@ -745,16 +837,19 @@ std::string_view FileReader::get(size_t from, size_t to) {
       (to < file.size && to > bufSize + bufStart))
     if (load(from, to).cont == nullptr)
       return {};
+
   return std::string_view(&buf[from - bufStart], length);
 };
 
 std::string_view FileReader::getLine(size_t row) {
+  
   // this has caused OOM due to unbounded access over the array :)
   if(row + 1 == rowOffsets.size()){
     return get(rowOffsets[row], this->file.size);
   }else if (row >= rowOffsets.size()){
     return "";
   }
+
   return get(rowOffsets[row], rowOffsets[row + 1]);
 }
 
@@ -768,6 +863,7 @@ FileReader::block FileReader::load(size_t from, size_t to) {
   if (from > file.size || to > file.size || to == 0)
     return {nullptr, 0};
 
+  // TODO: vector<char> would be better for this?
   if (buf) {
     delete[] buf;
     bufSize = 0;
@@ -838,42 +934,32 @@ const char *FileReader::tsRead(void *payload, uint32_t byte_index,
   return reader->buf + (byte_index - reader->bufStart);
 }
 
+
+TSRange FileReader::makeRange(size_t start, size_t end, std::vector<size_t> rowOffsets){
+  TSRange r;
+  r.start_byte  = static_cast<uint32_t>(start);
+  r.end_byte    = static_cast<uint32_t>(end);
+  r.start_point = _getP(start, rowOffsets);
+  r.end_point   = _getP(end,   rowOffsets);
+  return r;
+}
+
 std::vector<FileReader::MatchResult> FileReader::find(std::string pattern,
                                                       bool regex, uint32_t opt) {
 
+
+  // TODO: this must use next to get next block for file and not sync from outside
   std::vector<MatchResult> matches;
-
+  
   if (regex) {
-    PCRE2_SPTR pcrePattern = (PCRE2_SPTR)pattern.c_str();
-
-
-    int errornumber;
-    PCRE2_SIZE erroroffset;
-
-
-    pcre2_code *re = pcre2_compile(pcrePattern, PCRE2_ZERO_TERMINATED, opt,
-                                   &errornumber, &erroroffset, NULL);
-
-    if (re == NULL) {
-      PCRE2_UCHAR buffer[256];
-      pcre2_get_error_message(errornumber, buffer, sizeof(buffer));
-      std::cout << "PCRE ERROR compiling : " << buffer << std::endl;
-      throw std::invalid_argument(
-          "could not compile provided regex for fn find " + pattern + " - " +
-          file.pathStr);
-    }
-
-    pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
 
     if (buf == nullptr)
       if (sync().cont == nullptr)
         return matches;
 
-    matches = findWith(re);
+    pcre2_code *re = PcreCache::global().get(pattern, opt);
 
-    pcre2_code_free(re);
-
-    return matches;
+    return findWith(re);
   } else {
 
     if (buf == nullptr)
@@ -890,19 +976,83 @@ std::vector<FileReader::MatchResult> FileReader::find(std::string pattern,
       size_t matchStart = foundPos;
       size_t matchEnd = matchStart + pattern.size();
 
-      TSRange range;
-      range.start_byte = static_cast<uint32_t>(matchStart);
-      range.end_byte = static_cast<uint32_t>(matchEnd);
-      range.start_point = getP(matchStart);
-      range.end_point = getP(matchEnd);
       MatchResult match;
-      match.match = range;
+      match.match = makeRange(matchStart, matchEnd, rowOffsets);
       matches.push_back(match);
 
       offset = matchEnd;
     }
     return matches;
   }
+};
+
+std::vector<FileReader::MatchResult> FileReader::findIn(const std::string &text,
+                                                        std::string pattern,
+                                                        bool regex,
+                                                        uint32_t opt_compile) {
+
+  // Build a temporary rowOffsets for the provided text so getP works
+  // are correct relative to the text's own coordinates.
+  std::vector<size_t> rowOffsets;
+  bool rowOffsetsValid = false;
+  UPDATE_ROW_OFFSETS(text, text.length());
+
+  std::vector<MatchResult> matches;
+
+  if (regex) {
+    pcre2_code *re = PcreCache::global().get(pattern, opt_compile);
+
+    PCRE2_SPTR subject      = (PCRE2_SPTR)text.data();
+    PCRE2_SIZE subject_len  = text.size();
+    pcre2_match_data *md    = pcre2_match_data_create_from_pattern(re, NULL);
+    PCRE2_SIZE startOffset  = 0;
+
+    while (true) {
+      
+      int rc = pcre2_match(re, subject, subject_len, startOffset,
+                           PCRE2_NO_UTF_CHECK, md, NULL);
+
+      if (rc == PCRE2_ERROR_NOMATCH) break;
+      if (rc < 0) {
+        pcre2_match_data_free(md);
+        throw std::runtime_error("PCRE2 match error in findIn");
+      }
+
+      PCRE2_SIZE *ov = pcre2_get_ovector_pointer(md);
+      MatchResult m;
+      m.match = makeRange(ov[0], ov[1], rowOffsets);
+
+      for (int i = 1; i < rc; ++i) {
+        if (ov[2*i] == PCRE2_UNSET) continue;
+        m.captures.push_back(makeRange(ov[2*i], ov[2*i+1], rowOffsets));
+      }
+
+      startOffset = ov[1];
+      if (ov[0] == ov[1]) {
+        if (startOffset < subject_len) ++startOffset; else break;
+      }
+
+      if (startOffset >= subject_len) { 
+        matches.push_back(m); break; 
+      }
+
+      matches.push_back(m);
+    }
+
+    pcre2_match_data_free(md);
+
+  } else {
+    size_t offset = 0;
+    while (true) {
+      size_t pos = text.find(pattern, offset);
+      if (pos == std::string::npos) break;
+      MatchResult m;
+      m.match = makeRange(pos, pos + pattern.size(), rowOffsets);
+      matches.push_back(m);
+      offset = pos + pattern.size();
+    }
+  }
+  return matches;
 };
 
 std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
@@ -962,11 +1112,7 @@ std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
       if (start == PCRE2_UNSET || end == PCRE2_UNSET)
         continue;
 
-      TSRange capture;
-      capture.start_byte = static_cast<uint32_t>(start);
-      capture.end_byte = static_cast<uint32_t>(end);
-      capture.start_point = getP(start);
-      capture.end_point = getP(end);
+      TSRange capture = makeRange(start, end, rowOffsets);
       match.captures.push_back(capture);
     }
 
@@ -1024,8 +1170,8 @@ const FileSnapshot FileReader::snapshot() {
 
   if (file.isValid) {
     snap.file = file;
-    file.sync();
-    sync();
+    file.sync(); // TODO: is this needed?
+    sync(); // TODO: this basically throws away entire buf , maybe just check if it is stale?
     fs::file_time_type mtim = file.dir_entry.last_write_time();
     snap.lastModified = mtim.time_since_epoch().count();
   }
@@ -1114,6 +1260,7 @@ FileWriter::FileWriter(const FileSnapshot snap) {
   this->snap = snap;
   file = snap.file;
   _isValid = file.isValid;
+  rowOffsetsValid = false;
   UPDATE_ROW_OFFSETS(snap.cont, snap.cont.length());
 };
 
@@ -1145,7 +1292,6 @@ FileWriter::FileWriter(const FileWriter &copy) {
   rowOffsets = copy.rowOffsets;
   _isValid = copy.file.isValid;
 };
-;
 
 FileWriter::~FileWriter() {
   if (oFileStream.is_open())
@@ -1200,12 +1346,12 @@ bool FileWriter::flush(std::string &path) {
   return res;
 };
 
-#define modifySnap                                                             \
+#define UPDATE_SNAP_META(snap)                                                 \
   snap.dirty = true;                                                           \
   snap.lastModified =                                                          \
       std::chrono::system_clock::now().time_since_epoch().count();             \
   snap.file.size = snap.cont.length();                                         \
-  UPDATE_ROW_OFFSETS(snap.cont, snap.cont.length());                           \
+  rowOffsetsValid = false;                                                     \
   return *this;
 
 FileWriter &FileWriter::copy(std::string &sourcePath) {
@@ -1217,37 +1363,37 @@ FileWriter &FileWriter::copy(std::string &sourcePath) {
   File curr = snap.file;
   snap = tmp.snapshot();
   snap.file = curr;
-  modifySnap
+  UPDATE_SNAP_META(snap);
 };
 
 FileWriter &FileWriter::append(std::string &cont) {
   snap.cont.append(cont);
-  modifySnap
+  UPDATE_SNAP_META(snap);
 }
 
 FileWriter &FileWriter::insert(size_t offset, std::string &slice) {
   assert(offset < snap.cont.size());
   snap.cont.insert(offset, slice);
-  modifySnap
+  UPDATE_SNAP_META(snap);
 };
 
 FileWriter &FileWriter::write(const std::string &content) {
   snap.cont = std::string(content);
-  modifySnap
+  UPDATE_SNAP_META(snap);
 }
 
 FileWriter &FileWriter::write(size_t offset, char *newCont, size_t newContLen) {
   assert(offset < snap.cont.size());
   snap.cont.erase(offset, newContLen);
   snap.cont.insert(offset, newCont, newContLen);
-  modifySnap
+  UPDATE_SNAP_META(snap);
 };
 
 FileWriter &FileWriter::write(size_t offset, std::string &cont) {
   assert(offset < snap.cont.size());
   snap.cont.erase(offset, cont.length());
   snap.cont.insert(offset, cont);
-  modifySnap
+  UPDATE_SNAP_META(snap);
 };
 
 FileWriter &FileWriter::write(size_t from, size_t to, std::string &cont) {
@@ -1255,27 +1401,32 @@ FileWriter &FileWriter::write(size_t from, size_t to, std::string &cont) {
   assert(to < snap.cont.size());
   snap.cont.erase(from, to-from);
   snap.cont.insert(from, cont);
-  modifySnap
+  UPDATE_SNAP_META(snap);
 };
 
 FileWriter &FileWriter::deleteCont(size_t from, size_t to) {
   assert(from >= 0);
   assert(to < snap.cont.size());
   snap.cont.erase(from, to - from);
-  modifySnap
+  UPDATE_SNAP_META(snap);
 };
 
 FileWriter &FileWriter::deleteRow(size_t row) {
+  UPDATE_ROW_OFFSETS(snap.cont, snap.cont.length());
+
   assert(rowOffsets.size() > row);
   assert(row > -1);
+
   size_t row1Offset = rowOffsets[row];
   size_t row2Offset = rowOffsets[row + 1];
 
   snap.cont.erase(row1Offset, row1Offset - row2Offset);
-  modifySnap
+  UPDATE_SNAP_META(snap);
 };
 
 FileWriter &FileWriter::insertRow(size_t row, const std::string &cont) {
+  UPDATE_ROW_OFFSETS(snap.cont, snap.cont.length());
+
   assert(rowOffsets.size() > row);
   assert(row > -1);
   bool hasEndl = cont[cont.length() - 1] == '\n';
@@ -1284,26 +1435,13 @@ FileWriter &FileWriter::insertRow(size_t row, const std::string &cont) {
   snap.cont.insert(rowOffset, cont);
   if (!hasEndl)
     snap.cont.insert(rowOffset + cont.length(), 1, '\n');
-  modifySnap
+  UPDATE_SNAP_META(snap);
 };
 
 FileWriter &FileWriter::replaceAll(std::string pattern,
                                    std::string templateOrResult, uint32_t opt) {
 
-  int errornumber;
-  PCRE2_SIZE erroroffset;
-
-  // Compile pattern
-  pcre2_code *re = pcre2_compile((PCRE2_SPTR)pattern.c_str(), pattern.length(),
-                                 0, // default options
-                                 &errornumber, &erroroffset, nullptr);
-
-  if (!re) {
-    throw std::runtime_error("PCRE2 compilation failed at offset " +
-                             std::to_string(erroroffset));
-  }
-
-  pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
+  pcre2_code *re = PcreCache::global().get(pattern, opt);
 
   PCRE2_SIZE outLength = snap.cont.length() * 2;
 
@@ -1317,9 +1455,17 @@ substitute:
   buffer.resize(outLength);
   // expands the template with captures and replcaes match
   rc = pcre2_substitute(
-      re, (PCRE2_SPTR)snap.cont.c_str(), snap.cont.length(), 0, opt, nullptr,
-      nullptr, (PCRE2_SPTR)templateOrResult.c_str(), templateOrResult.length(),
-      (PCRE2_UCHAR *)buffer.data(), &outLength);
+                   re, 
+                   (PCRE2_SPTR)snap.cont.c_str(), // in buf
+                   snap.cont.length(),            // in len
+                   0,                              // startOffset 
+                   opt,                            // options
+                   nullptr,                        // matchData
+                   nullptr,                        // matchContext
+                   (PCRE2_SPTR)templateOrResult.c_str(), // replacement
+                   templateOrResult.length(),           // rlegth
+                   (PCRE2_UCHAR *)buffer.data(),        // out buf
+                   &outLength);                        // out len
 
   if (rc == PCRE2_ERROR_NOMEMORY) {
     std::cout << "PCR2_ERROR_NOMEMORY - " << outLength << std::endl;
@@ -1334,7 +1480,7 @@ substitute:
 
   snap.cont.assign(reinterpret_cast<char *>(buffer.data()), outLength);
 
-  modifySnap
+  UPDATE_SNAP_META(snap);
 };
 
 FileWriter &FileWriter::replace(std::string pattern,
@@ -1342,21 +1488,7 @@ FileWriter &FileWriter::replace(std::string pattern,
                                 uint32_t opt) {
   FileReader snapReader(snap);
 
-
-  int errornumber;
-  PCRE2_SIZE erroroffset;
-
-  pcre2_code *re = pcre2_compile((PCRE2_SPTR)pattern.c_str(), pattern.length(),
-                                 0, &errornumber, &erroroffset, nullptr);
-
-  if (!re) {
-    throw std::runtime_error("PCRE2 compilation failed at offset " +
-                             std::to_string(erroroffset));
-  }
-
-
-  pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
-
+  pcre2_code *re = PcreCache::global().get(pattern, opt);
 
   auto results = snapReader.findWith(re, true);
 
@@ -1381,10 +1513,16 @@ FileWriter &FileWriter::replace(std::string pattern,
   int rc = -1;
 substitute:
   buffer.resize(outLength);
-  rc = pcre2_substitute(re, (PCRE2_SPTR)(snap.cont.c_str() + start_offset),
-                        end_offset - start_offset, 0, opt, nullptr, nullptr,
+  rc = pcre2_substitute(re,
+                       (PCRE2_SPTR)(snap.cont.c_str() + start_offset),
+                        end_offset - start_offset,
+                        0,
+                        opt,
+                        nullptr,
+                        nullptr,
                         (PCRE2_SPTR)templateOrResult.c_str(),
-                        templateOrResult.length(), (PCRE2_UCHAR *)buffer.data(),
+                        templateOrResult.length(),
+                        (PCRE2_UCHAR *)buffer.data(),
                         &outLength);
 
   if (rc == PCRE2_ERROR_NOMEMORY) {
@@ -1445,6 +1583,7 @@ TSPoint FileEditor::getNewEndPoint(const Edit &edit){
 
 std::vector<FileEditor::Error> FileEditor::getConflictErrors(){
 
+  // TODO: this is problematic in terms of perfs as we do two seperate sorts 
   auto op = operations;
 
   /*
@@ -1529,6 +1668,7 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
           edit.range.end_point,     // old_end_point
           getNewEndPoint(edit),     // new_end_point
     };
+
     switch (edit.op) {
     case FileEditor::OP::INSERT: 
     {
@@ -1552,6 +1692,14 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
       writer.write(edit.range.start_byte, edit.range.end_byte, edit.change);
       original.edit(te, writer.snapshot().cont);
       break;
+    }
+    case FileEditor::OP::REPLACE:
+    {
+      assert(0 && "NOT_IMPLEMENTED"); // TODO
+    }
+    case FileEditor::OP::MARK:
+    {
+      assert(0 && "NOT_IMPLEMENTED"); // TODO
     }
     case FileEditor::OP::VALIDATE_CST: {
       for (auto err : original.getErrors()) {
@@ -1585,7 +1733,7 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
       const auto oldStart = r.rowOffsets[edit.range.start_point.row] + edit.range.start_point.column;
       const auto oldEnd   = r.rowOffsets[edit.range.end_point.row] + edit.range.end_point.column;
 
-      const std::string_view original = r.get(oldStart, oldEnd);
+      const std::string_view originalText = r.get(oldStart, oldEnd);
 
       std::cout << path << ":" << startRow << ":" << startCol << "\n";
       std::cout << "range: " << startRow << ":" << startCol
@@ -1594,7 +1742,7 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
       std::cout << edit.context << "\n";
 
       std::cout << "<<<<<<<<"   << "\n";
-      std::cout.write(original.data(), static_cast<std::streamsize>(original.size())) << "\n";
+      std::cout.write(originalText.data(), static_cast<std::streamsize>(originalText.size())) << "\n";
       std::cout << "========"   << "\n";
       std::cout << edit.change  << "\n";
       std::cout << ">>>>>>>>"   << "\n";
@@ -1747,6 +1895,7 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
     File file(entries[i]);
     file.level = level;
     
+    // TODO: the filtering must happen before the File is created as directory_entry is heavy?
     if (obeyGitIgnore && repo.isPathIgnored(file.path)) {
       continue;
     }
@@ -1843,6 +1992,7 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
       return;
     }
 
+    // TODO: the filtering must happen before the File is created as directory_entry is heavy?
     if (obeyGitIgnore && repo.isPathIgnored(file.path)) {
       continue;
     }
@@ -1908,6 +2058,55 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
     }
   }
 }
+
+// PcreCache 
+pcre2_code * PcreCache::get(const std::string &pattern, uint32_t opts) {
+    Key k{pattern, opts};
+    {
+      std::lock_guard<std::mutex> lock(mtx);
+      auto it = cache.find(k);
+      if (it != cache.end())
+        return it->second;
+    }
+    int errornumber;
+    PCRE2_SIZE erroroffset;
+    pcre2_code *re = pcre2_compile((PCRE2_SPTR)pattern.c_str(),
+                                   PCRE2_ZERO_TERMINATED, opts,
+                                   &errornumber, &erroroffset, NULL);
+    if (re == NULL) {
+      PCRE2_UCHAR buf[256];
+      pcre2_get_error_message(errornumber, buf, sizeof(buf));
+      throw std::invalid_argument(
+          std::string("PcreCache: compile failed for '") + pattern +
+          "': " + reinterpret_cast<char *>(buf));
+    }
+    pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
+    std::lock_guard<std::mutex> lock(mtx);
+    auto [it, _] = cache.emplace(k, re);
+    return it->second;
+}
+
+//TSEnginePool 
+std::shared_ptr<TSEngine> TSEnginePool::get(const TSLanguage* lang){
+  std::lock_guard<std::mutex> lock(mtx);
+  auto it = engines.find(lang);
+  if (it != engines.end()) return it->second;
+  auto ptr = std::make_shared<TSEngine>(lang);
+  engines[lang] = ptr;
+  return ptr;
+}
+
+// QueryCache
+TSQuery* QueryCache::get(TSEngine* engine, const std::string& pattern) {
+  std::lock_guard<std::mutex> lock(mtx);
+  auto key = std::make_pair(engine, pattern);
+  auto it = cache.find(key);
+  if (it != cache.end()) return it->second;
+  TSQuery* q = engine->queryNew(const_cast<std::string&>(pattern));
+  cache[key] = q;
+  return q;
+}
+
 
 // ThreadPool
 ThreadPool::ThreadPool(size_t maxCount) {
@@ -2000,6 +2199,7 @@ void CSTTree::getQueryForNode(TSNode node, std::string &query, size_t level) {
 std::string CSTTree::getText(TSNode n){
   auto sb = ts_node_start_byte(n);
   auto eb = ts_node_end_byte(n);
+  // TODO: should this return string_view or should CSTTree hold its own sourc string 
   return std::string(source.substr(sb, eb - sb));
 };
 
@@ -2010,7 +2210,8 @@ std::string CSTTree::asQuery() {
   return query;
 };
 
-template <typename cb> void CSTTree::find(TSQuery *query, cb handle) {
+template <typename cb> 
+void CSTTree::find(TSQuery *query, cb handle) {
   TSNode root = ts_tree_root_node(tree);
   TSQueryCursor *cursor = ts_query_cursor_new();
   ts_query_cursor_exec(cursor, query, root);
@@ -2048,6 +2249,7 @@ bool CSTTree::validate(const TSInputEdit ed, size_t insertL, size_t delL) {
 };
 
 void CSTTree::edit(const TSInputEdit ed, const std::string &source) {
+  // TODO: currently source is tring view, should ip be string or string_view
   this->source = source;
   ts_tree_edit(tree, &ed);
   auto newTree = parent.parse(*this, source);
@@ -2064,7 +2266,8 @@ std::vector<TSRange> CSTTree::getErrors() {
       ] @syntax.error
   )";
 
-  TSQuery *sq = parent.queryNew(q);
+  // parent is reference of TSEngine , is &parent ok here? 
+  TSQuery *sq = QueryCache::global().get(&parent, q);
   std::vector<TSRange> errors;
   find(sq, [&errors](TSQueryMatch m) mutable {
     for (size_t i = 0; i < m.capture_count; i++) {
@@ -2074,14 +2277,16 @@ std::vector<TSRange> CSTTree::getErrors() {
       errors.push_back(r);
     }
   });
-  ts_query_delete(sq);
+
   return errors;
 }
 
 // TSEngine
 
 TSEngine::TSEngine(const TSLanguage *lang) {
+  // TODO: should lang be a shared pointer
   this->lang = lang;
+  // TODO: should parser be a shared pointer or should it come from pool
   TSParser *parser = ts_parser_new();
   ts_parser_set_language(parser, lang);
   this->parser = parser;
@@ -2091,6 +2296,7 @@ TSEngine::~TSEngine() { ts_parser_delete(this->parser); };
 
 const CSTTree TSEngine::parse(FileReader &reader) {
   TSTree *tree = ts_parser_parse(parser, NULL, reader.asTsInput());
+  // TODO: this assumes reader == full file
   return CSTTree(tree, reader.get(reader.bufStart, reader.bufSize), *this);
 }
 
@@ -2120,6 +2326,7 @@ TSQuery *TSEngine::queryNew(std::string &queryExpr) {
   TSQuery *query = ts_query_new(lang, queryExpr.c_str(), queryExpr.length(),
                                 &errorOffset, &error);
 
+  // TODO: assertions are stripped in release, if should be used here
   assert(error != TSQueryErrorSyntax);
   assert(error != TSQueryErrorNodeType);
   assert(error != TSQueryErrorField);
