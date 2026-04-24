@@ -63,7 +63,8 @@ class TSLang{
   public:
   LIB_HANDLE handle = nullptr;
   const TSLanguage* lang = nullptr;
-  TSLang(LIB_HANDLE handle, const TSLanguage* lang);
+  const std::string name;
+  TSLang(LIB_HANDLE handle, const TSLanguage* lang, std::string name);
   TSLang(){};
   
   TSLang(TSLang&& other) noexcept {
@@ -103,7 +104,7 @@ class Loader{
 #ifndef LOADER_IMPLEMENTATION 
 #define LOADER_IMPLEMENTATION
 
-TSLang::TSLang(LIB_HANDLE handle, const TSLanguage* lang){ 
+TSLang::TSLang(LIB_HANDLE handle, const TSLanguage* lang, const std::string name): name(name){ 
   this->handle = handle;
   this->lang = lang;
 }
@@ -148,47 +149,72 @@ TSLang Loader::loadTSLang(std::string libPath, std::string lang)
 
     const TSLanguage* language = fn();
 
-    return TSLang(handle, language);
+    return TSLang(handle, language, lang);
 }
 
 
 TSLang Loader::get(std::string lang){
-  std::string gitUrl = lookup[lang];
-  
+
   std::string repoPath = std::string(PARSER_PATH)+"/tree-sitter-"+lang;
-  std::cout << "Cloning " << gitUrl << std::endl;
-  LibGit::clone(gitUrl, repoPath, true);
 
-  // TODO: make this cross platform and portable
-  // or maybe make is fine?
-  std::string compileCommand =  ("make -C " + repoPath);
-  // TODO: maybe do this differetly as there may be code execution from the md file
-  int status = std::system(compileCommand.c_str());
-
-  if (status != 0) {
-    throw std::runtime_error("Unable to compile parser - " + compileCommand);
-  }
-
+  TSLang tsLang;
   DirWalker walker(repoPath);
-  walker.matchExt.insert(".so");
-  walker.matchExt.insert(".dll");
+  // TODO: different ext for mac, also maybe do introspection incase of static linking 
+  std::set<std::string> libExt = {".so", ".dll", ".dllink"};
+  walker.matchExt = libExt;
   walker.recursive = true;
   walker.obeyGitIgnore = false;
 
-  TSLang tsLang;
-  std::string str;
+  auto action =[&libExt, &tsLang, lang](DirWalker::STATUS status, File file){
 
-  walker.walk([&tsLang, lang](DirWalker::STATUS status, File file){
+      bool match = false;
+      for(auto ext : libExt){
+        if(file.name.find("libtree-sitter-"+lang+ext) != std::string::npos) {
+          match = true;
+        }
+      }
 
-      if(file.name.find("libtree-sitter-"+lang+".so") == std::string::npos) return DirWalker::CONTINUE;
+      if(!match) {
+        return DirWalker::CONTINUE;
+      }
 
       std::cout << "Found library - " << file.pathStr << std::endl;
       tsLang = loadTSLang(file.pathStr, lang);
 
       return DirWalker::STOP;
-  });
+  }; 
 
-  std::cout << "Loaded TS Parser - " << ts_language_name(tsLang.lang) << std::endl;
+  walker.walk(action);
+
+  if(!(tsLang.lang && tsLang.handle)){
+    std::string gitUrl = lookup[lang];
+    
+    std::cout << "Cloning " << gitUrl << std::endl;
+    LibGit::clone(gitUrl, repoPath, true);
+
+    // TODO: make this cross platform and portable
+    // or maybe make is fine?
+    std::string compileCommand =  ("make -C " + repoPath);
+    // TODO: maybe do this differetly as there may be code execution from the md file
+    int status = std::system(compileCommand.c_str());
+
+    if (status != 0) {
+      throw std::runtime_error("Unable to compile parser - " + compileCommand);
+    }
+
+    walker.walk(action);
+  }
+
+  std::cout << "---------------------------------------";
+
+  std::cout << "Loaded TS Parser - " << lang << std::endl;
+  std::cout << "             abi - " << ts_language_abi_version(tsLang.lang) << std::endl;
+  auto name = ts_language_name(tsLang.lang);
+  if(name){
+    std::cout << "          name - " << name  << std::endl;
+  }
+
+  std::cout << "---------------------------------------";
   
   return tsLang; 
 }

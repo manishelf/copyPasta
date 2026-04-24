@@ -465,7 +465,6 @@ public:
   friend TSEngine;
 
   CSTTree(TSTree *tree, std::string_view source, TSEngine &parent);
-  CSTTree(TSTree *tree, std::string source, TSEngine &parent);
   ~CSTTree();
 
   std::string sTree();
@@ -1886,6 +1885,8 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
   if (!_isValid)
     return FAILED;
 
+  // TODO: this should be cached at walker level so that next walk call does not load same entries again
+  // until the path is changed
   std::vector<fs::directory_entry> entries(
       fs::directory_iterator(this->path), // begin it
       fs::directory_iterator()            // end it
