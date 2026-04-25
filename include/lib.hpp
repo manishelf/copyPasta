@@ -50,14 +50,14 @@ public:
   fs::file_status status;
   fs::directory_entry dir_entry;
 
-  git_repository *repo;
-
+  // hotspot
   File(std::string path);
   File(fs::directory_entry entry);
   File();
+  // hotspot
   ~File();
 
-  void loadFromEntry(fs::directory_entry entry);
+  void loadFromEntry();
 
   void sync();
 
@@ -89,13 +89,11 @@ class FileReader {
   char *buf = nullptr;
 
   bool rowOffsetsValid = false;
+  std::vector<size_t> rowOffsets;
 
-  static TSRange makeRange(size_t start, size_t end, std::vector<size_t> rowOffsets);
- 
 public:
   size_t level = 0;
 
-  std::vector<size_t> rowOffsets;
 
   size_t bufStart;
   size_t bufSize;
@@ -113,6 +111,7 @@ public:
 
   bool isValid() { return _isValid; };
   File getFile() { return file; };
+  const std::vector<size_t>& getRowOffsets(); 
 
   typedef struct {
     char *cont;
@@ -203,7 +202,7 @@ public:
   }
 };
 
-TSPoint _getP(size_t byteOffset, std::vector<size_t> rowOffsets);
+TSPoint _getP(size_t byteOffset, const std::vector<size_t>& rowOffsets);
 
 class FileWriter {
   File file;
@@ -211,7 +210,8 @@ class FileWriter {
   std::ofstream oFileStream;
   FileSnapshot snap;
   bool rowOffsetsValid = false;
- 
+  std::vector<size_t> rowOffsets;
+
 public:
   FileWriter(const FileSnapshot snap);
   FileWriter(std::string path);
@@ -222,16 +222,13 @@ public:
   bool isValid() { return _isValid; };
   File getFile() { return file; };
   const FileSnapshot snapshot() const { return snap; };
-
-  std::vector<size_t> rowOffsets;
+  const std::vector<size_t>& getRowOffsets(); 
 
   TSPoint getP(size_t byteOffset);
 
   bool save(); // save buf to underling file
-  bool
-  backup(const std::string &suffix = ".bak"); // create a backup in same folder
-  bool
-  flush(std::string &path); // create if non existing , will over write existing
+  bool backup(const std::string &suffix = ".bak"); // create a backup in same folder
+  bool flush(std::string &path); // create if non existing , will over write existing
 
   FileWriter &copy(std::string &path); // load file cont to buf
 
@@ -426,6 +423,7 @@ public:
     return actRes;
   }
 
+  // TODO:
   bool isPathIgnored(std::string path);
 
 
@@ -650,15 +648,15 @@ public:
 #ifndef LIB_IMPLEMENTATION
 #define LIB_IMPLEMENTATION
 
-void File::loadFromEntry(fs::directory_entry entry){
-  dir_entry = entry;
+void File::loadFromEntry(){
   if (dir_entry.exists()) {
-    this->path = fs::absolute(dir_entry.path().lexically_normal());
-    name = this->path.filename();
-    ext = this->path.extension();
-    isDir = dir_entry.is_directory();
-    isReg = dir_entry.is_regular_file();
+    DEBUG("File loadFromEntry");
+    path = fs::absolute(dir_entry.path().lexically_normal());
+    name = path.filename();
+    ext = path.extension();
     status = dir_entry.status();
+    isDir = fs::is_directory(status);
+    isReg = fs::is_regular_file(status);
     if (isReg) {
       size = dir_entry.file_size();
     } else {
@@ -671,20 +669,16 @@ void File::loadFromEntry(fs::directory_entry entry){
   }
 }
 
-File::File(std::string path) {
+File::File(std::string path): dir_entry(path), pathStr(path){
   DEBUG("File ctor - " << path);
-  dir_entry = fs::directory_entry(path);
-  loadFromEntry(dir_entry);
-  pathStr = path;
   level = 0;
+  loadFromEntry();
 };
 
-File::File(fs::directory_entry entry) {
-  dir_entry = entry;
-  pathStr = entry.path();
+File::File(fs::directory_entry entry): dir_entry(entry), pathStr(entry.path()) {
   DEBUG("File ctor - " << pathStr);
   level = 0;
-  loadFromEntry(dir_entry);
+  loadFromEntry();
 };
 
 File::File() {
@@ -745,6 +739,11 @@ File::~File() {
     }                                                                            \
     rowOffsetsValid = true;                                                      \
   }
+
+const std::vector<size_t>& FileReader::getRowOffsets(){
+  UPDATE_ROW_OFFSETS(buf, bufSize);
+  return rowOffsets;
+}
 
 FileReader::FileReader(File file, size_t blockSize)
     : iFileStream(file.path, std::ios::binary | std::ios::ate) {
@@ -813,7 +812,6 @@ void FileReader::readFileMetadata() {
     iFileStream.seekg(0, std::ios::beg);
 
     rowOffsets.reserve(file.size / 50);
-    rowOffsets.push_back(0); // row no 0
     size_t blockSize = std::min(this->blockSize, file.size);
     DEBUG("FileReader readFileMetadata block size - " << blockSize);
 
@@ -827,18 +825,11 @@ void FileReader::readFileMetadata() {
       if (bytesRead <= 0)
         break;
 
-      for (std::streamsize i = 0; i < bytesRead; ++i) {
-        if (buf[i] == '\n') {
-          rowOffsets.push_back(currentOffset + i + 1);
-        }
-      }
-
+      rowOffsetsValid = false;
       bufStart = currentOffset;
       bufSize = blockSize;
       currentOffset += bytesRead;
     }
-
-    DEBUG("FileReader readFileMetadata buf size - " << bufSize);
 
     iFileStream.read(buf, file.size);
     iFileStream.clear();
@@ -905,6 +896,7 @@ std::string_view FileReader::getLine(size_t row) {
   
   DEBUG("FileReader getLine");
 
+  UPDATE_ROW_OFFSETS(buf, bufSize);
   // this has caused OOM due to unbounded access over the array :)
   if(row + 1 == rowOffsets.size()){
     return get(rowOffsets[row], this->file.size);
@@ -1003,21 +995,23 @@ const char *FileReader::tsRead(void *payload, uint32_t byte_index,
   return reader->buf + (byte_index - reader->bufStart);
 }
 
-TSPoint _getP(size_t byteOffset, std::vector<size_t> rowOffsets) {
+TSPoint _getP(size_t byteOffset, const std::vector<size_t>& rowOffsets) {
 
   if (rowOffsets.empty())
     return {0, static_cast<uint32_t>(byteOffset)};
 
   DEBUG("_getP called - " << rowOffsets.size());
+  auto begin = rowOffsets.data();
+  auto end   = begin + rowOffsets.size();
   // Find the first row offset that is GREATER than our byte
-  auto it = std::upper_bound(rowOffsets.begin(), rowOffsets.end(), byteOffset);
+  auto it = std::upper_bound(begin, end, byteOffset);
 
-  if (it == rowOffsets.begin()) {
+  if (it == begin) {
     return {0, static_cast<uint32_t>(byteOffset)};
   }
 
   // The row number is the index of the element before 'it'
-  uint32_t row = std::distance(rowOffsets.begin(), it) - 1;
+  uint32_t row = static_cast<uint32_t>((it - begin) - 1);
 
   // The column is the difference between our offset and the rows start offset
   uint32_t col = byteOffset - rowOffsets[row];
@@ -1026,12 +1020,13 @@ TSPoint _getP(size_t byteOffset, std::vector<size_t> rowOffsets) {
 }
 
 TSPoint FileReader::getP(size_t byteOffset) {
+  UPDATE_ROW_OFFSETS(buf, bufSize);
   // :: is needed to scope it from outside
   return ::_getP(byteOffset, rowOffsets);
 }
 
 
-TSRange FileReader::makeRange(size_t start, size_t end, std::vector<size_t> rowOffsets){
+TSRange _makeRange(size_t start, size_t end, const std::vector<size_t>& rowOffsets){
   TSRange r;
   r.start_byte  = static_cast<uint32_t>(start);
   r.end_byte    = static_cast<uint32_t>(end);
@@ -1074,7 +1069,7 @@ std::vector<FileReader::MatchResult> FileReader::find(std::string pattern,
       size_t matchEnd = matchStart + pattern.size();
 
       MatchResult match;
-      match.match = makeRange(matchStart, matchEnd, rowOffsets);
+      match.match = _makeRange(matchStart, matchEnd, rowOffsets);
       matches.push_back(match);
 
       offset = matchEnd;
@@ -1110,7 +1105,7 @@ std::vector<FileReader::MatchResult> FileReader::findIn(const std::string &text,
     while (true) {
       
       int rc = pcre2_match(re, subject, subject_len, startOffset,
-                           PCRE2_NO_UTF_CHECK, md, NULL);
+                           PCRE2_NO_UTF_CHECK, md, NULL); // this will match first instance from offset
 
       if (rc == PCRE2_ERROR_NOMATCH) break;
       if (rc < 0) {
@@ -1120,11 +1115,11 @@ std::vector<FileReader::MatchResult> FileReader::findIn(const std::string &text,
 
       PCRE2_SIZE *ov = pcre2_get_ovector_pointer(md);
       MatchResult m;
-      m.match = makeRange(ov[0], ov[1], rowOffsets);
+      m.match = _makeRange(ov[0], ov[1], rowOffsets);
 
       for (int i = 1; i < rc; ++i) {
         if (ov[2*i] == PCRE2_UNSET) continue;
-        m.captures.push_back(makeRange(ov[2*i], ov[2*i+1], rowOffsets));
+        m.captures.push_back(_makeRange(ov[2*i], ov[2*i+1], rowOffsets));
       }
 
       startOffset = ov[1];
@@ -1147,7 +1142,7 @@ std::vector<FileReader::MatchResult> FileReader::findIn(const std::string &text,
       size_t pos = text.find(pattern, offset);
       if (pos == std::string::npos) break;
       MatchResult m;
-      m.match = makeRange(pos, pos + pattern.size(), rowOffsets);
+      m.match = _makeRange(pos, pos + pattern.size(), rowOffsets);
       matches.push_back(m);
       offset = pos + pattern.size();
     }
@@ -1215,7 +1210,7 @@ std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
       if (start == PCRE2_UNSET || end == PCRE2_UNSET)
         continue;
 
-      TSRange capture = makeRange(start, end, rowOffsets);
+      TSRange capture = _makeRange(start, end, rowOffsets);
       match.captures.push_back(capture);
     }
 
@@ -1339,6 +1334,11 @@ FileReader::~FileReader() {
 
 // FileWriter
 
+const std::vector<size_t>& FileWriter::getRowOffsets(){
+  UPDATE_ROW_OFFSETS(snap.cont, snap.cont.length());
+  return rowOffsets;
+}
+
 FileWriter::FileWriter(const FileSnapshot snap) {
   DEBUG("FileWriter ctor with snap");
   this->snap = snap;
@@ -1356,7 +1356,7 @@ FileWriter::FileWriter(std::string path) {
   }
   snap = tmp.snapshot();
   file = tmp.getFile();
-  rowOffsets = tmp.rowOffsets;
+  rowOffsets = tmp.getRowOffsets();
   _isValid = file.isValid;
 }
 
@@ -1368,7 +1368,7 @@ FileWriter::FileWriter(File f) {
   }
   snap = tmp.snapshot();
   file = tmp.getFile();
-  rowOffsets = tmp.rowOffsets;
+  rowOffsets = tmp.getRowOffsets();
   _isValid = file.isValid;
 }
 
@@ -1848,8 +1848,8 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
       const auto endRow   = pNew.row     + 1;
       const auto endCol   = pNew.column  + 1;
 
-      const auto oldStart = r.rowOffsets[edit.range.start_point.row] + edit.range.start_point.column;
-      const auto oldEnd   = r.rowOffsets[edit.range.end_point.row] + edit.range.end_point.column;
+      const auto oldStart = r.getRowOffsets()[edit.range.start_point.row] + edit.range.start_point.column;
+      const auto oldEnd   = r.getRowOffsets()[edit.range.end_point.row] + edit.range.end_point.column;
 
       const std::string_view originalText = r.get(oldStart, oldEnd);
 
