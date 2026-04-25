@@ -603,30 +603,30 @@ public:
 // Set active level
 #define LOGGER_LEVEL LOG_LEVEL_DEBUG
 
-#define CURRENT_TIME ([&]() {                                                   \
-    using namespace std::chrono;                                                \
-    auto now = system_clock::now();                                             \
-    auto secs = time_point_cast<std::chrono::seconds>(now);                     \
-    auto micros = duration_cast<std::chrono::microseconds>(now - secs).count(); \
-    auto millis = micros / 1000;                                                \
-    auto micros_rem = micros % 1000;                                            \
-                                                                                \
-    std::time_t t = system_clock::to_time_t(secs);                              \
-    std::tm tm{};                                                               \
-    localtime_r(&t, &tm);                                                       \
-                                                                                \
-    std::ostringstream oss;                                                     \
-    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");                             \
-    oss << '.' << std::setw(3) << std::setfill('0') << millis;                  \
-    oss << std::setw(3) << std::setfill('0') << micros_rem;                     \
-    return oss.str();                                                           \
-}())
+std::string inline currentTime(){                                                    
+    using namespace std::chrono;                                                
+    auto now = system_clock::now();                                             
+    auto secs = time_point_cast<std::chrono::seconds>(now);                     
+    auto micros = duration_cast<std::chrono::microseconds>(now - secs).count(); 
+    auto millis = micros / 1000;                                                
+    auto micros_rem = micros % 1000;                                            
+                                                                                
+    std::time_t t = system_clock::to_time_t(secs);                              
+    std::tm tm{};                                                               
+    localtime_r(&t, &tm);                                                       
+                                                                                
+    std::ostringstream oss;                                                     
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");                             
+    oss << '.' << std::setw(3) << std::setfill('0') << millis;                  
+    oss << std::setw(3) << std::setfill('0') << micros_rem;                     
+    return oss.str();                                                           
+};
 
 // Core log macro
 #define LOG(level, label, msg)                                        \
     do {                                                              \
         if (level >= LOGGER_LEVEL) {                                  \
-            std::cout << "[" << CURRENT_TIME << "] "                  \
+            std::cout << "[" << currentTime() << "] "                 \
                       << label                                        \
                       << " "                                          \
                       << msg                                          \
