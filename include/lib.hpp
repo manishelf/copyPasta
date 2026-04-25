@@ -1,3 +1,4 @@
+#include "git2/signature.h"
 #include "git2/types.h"
 #include <algorithm>
 #include <assert.h>
@@ -50,7 +51,7 @@ public:
   fs::file_status status;
   fs::directory_entry dir_entry;
 
-  // hotspot
+  // TODO: hotspot
   File(std::string path);
   File(fs::directory_entry entry);
   File();
@@ -123,6 +124,9 @@ public:
   std::string_view get();
   std::string_view get(size_t from, size_t to);
   std::string_view getLine(size_t row);
+  //TODO:
+  std::string_view getIndent(size_t row);
+
   void reset();
   block readBlockAt(size_t pos);
   block next();
@@ -203,6 +207,7 @@ public:
 };
 
 TSPoint _getP(size_t byteOffset, const std::vector<size_t>& rowOffsets);
+TSRange _makeRange(size_t start, size_t end, const std::vector<size_t>& rowOffsets);
 
 class FileWriter {
   File file;
@@ -261,6 +266,11 @@ class LibGit {
   RepoPtr repo;
   std::string root;
   std::mutex gitMutex;
+  
+  std::string username = "copyPasta";
+  std::string email = "manishelf@proton.me";
+  git_signature* signature;
+
   static std::once_flag lib_git_init;
   static void init();
 
@@ -276,14 +286,16 @@ public:
   
   void addIgnoreRule(std::string rule);
 
-  void add(fs::path &path);
+  void add(const fs::path &path);
 
-  // TODO:
   void checkout(std::string blobId);
   void branchCreate(std::string name);
-  void setSignature(std::string email);
+  void setSignature(std::string username, std::string email);
   void commit(std::string message);
-  void pull();
+
+  bool branchExists(std::string name);
+
+  // TODO:
   std::vector<git_diff> diff();
   std::vector<git_diff> diff(std::string blobId);
 };
@@ -319,6 +331,7 @@ public:
   ERR(CST_ERROR)                                                               \
   ERR(CST_MISSING)
 
+class TSEngine;
 class CSTTree;
 class FileEditor {
 public:
@@ -350,7 +363,9 @@ public:
     TSRange range;
     Edit edit;
   };
+ 
   FileEditor();
+
   void queue(Edit e); // unordered
   void reset();
   std::vector<Error> getConflictErrors();
@@ -504,6 +519,17 @@ public:
   TSQuery *queryNew(std::string &queryExpr);
 };
 
+struct ReaderWriterEngineTree {
+  FileReader fr;
+  FileWriter fw;
+  FileEditor edt;
+  TSEngine eng;
+  CSTTree t;
+};
+
+// ReaderWriterEngineTree getReaderWriterEngineTree(const File& file, const TSLanguage* lang);
+// Use ReaderWriterEngineTree macro instead
+
 class ThreadPool {
   std::vector<std::thread> workers;
   std::queue<std::function<void()>> task;
@@ -558,6 +584,7 @@ public:
   ~PcreCache() {
     for (auto &[k, re] : cache)
       pcre2_code_free(re);
+    cache.clear();
   }
 
   pcre2_code *get(const std::string &pattern, uint32_t opts = PCRE2_CASELESS);
@@ -595,13 +622,15 @@ public:
   }
 };
 
+#define LOG_LEVEL_DEBUG_FULL -1
 #define LOG_LEVEL_DEBUG 0
 #define LOG_LEVEL_INFO  1
 #define LOG_LEVEL_WARN  2
 #define LOG_LEVEL_ERROR 3
+#define LOG_LEVEL_NONE  4
 
 // Set active level
-#define LOGGER_LEVEL LOG_LEVEL_DEBUG
+#define LOGGER_LEVEL LOG_LEVEL_NONE
 
 std::string inline currentTime(){                                                    
     using namespace std::chrono;                                                
@@ -633,11 +662,11 @@ std::string inline currentTime(){
                       << std::endl;                                   \
         }                                                             \
     } while (0)
-
-#define DEBUG(msg) LOG(LOG_LEVEL_DEBUG, "[DEBUG]", msg)
-#define INFO(msg)  LOG(LOG_LEVEL_INFO,  "[INFO ]", msg)
-#define WARN(msg)  LOG(LOG_LEVEL_WARN,  "[WARN ]", msg)
-#define ERROR(msg) LOG(LOG_LEVEL_ERROR, "[ERROR]", msg)
+#define DEBUG_FULL(msg) LOG(LOG_LEVEL_DEBUG_FULL, "[DEBUG_FULL]", msg)
+#define DEBUG(msg)      LOG(LOG_LEVEL_DEBUG,           "[DEBUG]", msg)
+#define INFO(msg)       LOG(LOG_LEVEL_INFO,            "[INFO ]", msg)
+#define WARN(msg)       LOG(LOG_LEVEL_WARN,            "[WARN ]", msg)
+#define ERROR(msg)      LOG(LOG_LEVEL_ERROR,           "[ERROR]", msg)
 
 #endif // LIB_H_
 
@@ -650,7 +679,7 @@ std::string inline currentTime(){
 
 void File::loadFromEntry(){
   if (dir_entry.exists()) {
-    DEBUG("File loadFromEntry");
+    DEBUG_FULL("File loadFromEntry");
     path = fs::absolute(dir_entry.path().lexically_normal());
     name = path.filename();
     ext = path.extension();
@@ -664,19 +693,19 @@ void File::loadFromEntry(){
     }
     isValid = true;
   } else {
-    DEBUG("File is invalid");
+    ERROR("File is invalid - " << dir_entry.path());
     isValid = false;
   }
 }
 
 File::File(std::string path): dir_entry(path), pathStr(path){
-  DEBUG("File ctor - " << path);
+  DEBUG_FULL("File ctor - " << path);
   level = 0;
   loadFromEntry();
 };
 
 File::File(fs::directory_entry entry): dir_entry(entry), pathStr(entry.path()) {
-  DEBUG("File ctor - " << pathStr);
+  DEBUG_FULL("File ctor - " << pathStr);
   level = 0;
   loadFromEntry();
 };
@@ -700,14 +729,14 @@ void File::sync() {
 int File::deleteFile(File &target) {
   if (target.isDir)
     return -1;
-  DEBUG("File delete file - " << target.pathStr);
+  INFO("File delete file - " << target.pathStr);
   return fs::remove(target.path);
 };
 
 int File::deleteDir(File &target) {
   if (!target.isDir)
     return false;
-  DEBUG("File delete dir" << target.pathStr);
+  INFO("File delete dir" << target.pathStr);
   return fs::remove_all(target.path);
 };
 
@@ -717,19 +746,19 @@ bool File::rename(File &file, std::string name) {
   file.pathStr = name;
   file.dir_entry = fs::directory_entry(file.path);
   file.sync();
-  DEBUG("File rename from - " << file.name << " to - " << name);
+  INFO("File rename from - " << file.name << " to - " << name);
   return true;
 };
 
 File::~File() {
-  DEBUG("File destroyed");
+  DEBUG_FULL("File destroyed");
 };
 
 // FileReader
 
 #define UPDATE_ROW_OFFSETS(data, len)                                            \
   if(!rowOffsetsValid){                                                          \
-    DEBUG("Updating row offsets - " << len);                                     \
+    DEBUG_FULL("Updating row offsets - " << len);                                \
     rowOffsets.clear();                                                          \
     rowOffsets.push_back(0);                                                     \
     for (size_t i = 0; i < (len); ++i) {                                         \
@@ -747,7 +776,7 @@ const std::vector<size_t>& FileReader::getRowOffsets(){
 
 FileReader::FileReader(File file, size_t blockSize)
     : iFileStream(file.path, std::ios::binary | std::ios::ate) {
-  DEBUG("FileReader ctor");
+  DEBUG_FULL("FileReader ctor");
   this->file = file;
   this->blockSize = blockSize;
   _isValid = !file.isDir;
@@ -757,7 +786,7 @@ FileReader::FileReader(File file, size_t blockSize)
 
 FileReader::FileReader(std::string filePath, size_t blockSize)
     : iFileStream(filePath.c_str(), std::ios::binary | std::ios::ate) {
-  DEBUG("FileReader ctor");
+  DEBUG_FULL("FileReader ctor");
   this->file = File(filePath);
   if (file.isValid) {
     _isValid = true && !file.isDir;
@@ -770,7 +799,7 @@ FileReader::FileReader(std::string filePath, size_t blockSize)
 };
 
 FileReader::FileReader(const FileSnapshot snap, size_t blockSize) {
-  DEBUG("FileReader ctor with snap");
+  DEBUG_FULL("FileReader ctor with snap");
   snapShotMode = true;
   buf = new char[snap.cont.length()];
   bufStart = 0;
@@ -784,7 +813,7 @@ FileReader::FileReader(const FileSnapshot snap, size_t blockSize) {
 };
 
 FileReader::FileReader(const FileReader &copy) {
-  DEBUG("FileReader copy");
+  DEBUG_FULL("FileReader copy");
   this->iFileStream = std::ifstream(copy.file.pathStr);
   this->file = copy.file;
   this->_isValid = copy._isValid;
@@ -803,7 +832,7 @@ FileReader::FileReader(const FileReader &copy) {
 void FileReader::readFileMetadata() {
   if (iFileStream.is_open() && file.isValid && file.size != 0) {
 
-    DEBUG("FileReader readFileMetadata");
+    DEBUG_FULL("FileReader readFileMetadata");
 
     bufSize = file.size;
     bufStart = 0;
@@ -813,7 +842,7 @@ void FileReader::readFileMetadata() {
 
     rowOffsets.reserve(file.size / 50);
     size_t blockSize = std::min(this->blockSize, file.size);
-    DEBUG("FileReader readFileMetadata block size - " << blockSize);
+    DEBUG_FULL("FileReader readFileMetadata block size - " << blockSize);
 
     buf = new char[blockSize];
     size_t currentOffset = 0;
@@ -835,7 +864,7 @@ void FileReader::readFileMetadata() {
     iFileStream.clear();
 
   } else {
-    DEBUG("FileReader readFileMetadata failed");
+    ERROR("FileReader readFileMetadata failed");
     bufSize = 0;
     bufStart = 0;
     _isValid = false;
@@ -880,7 +909,7 @@ std::string_view FileReader::get(size_t from, size_t to) {
   if (file.isValid && (from > file.size || to > file.size))
     return {};
 
-  DEBUG("FileReader get");
+  DEBUG_FULL("FileReader get");
 
   size_t length = to - from;
 
@@ -894,7 +923,7 @@ std::string_view FileReader::get(size_t from, size_t to) {
 
 std::string_view FileReader::getLine(size_t row) {
   
-  DEBUG("FileReader getLine");
+  DEBUG_FULL("FileReader get");
 
   UPDATE_ROW_OFFSETS(buf, bufSize);
   // this has caused OOM due to unbounded access over the array :)
@@ -948,7 +977,7 @@ FileReader::block FileReader::readBlockAt(size_t pos) {
   if (pos >= file.size)
     return {nullptr, 0};
 
-  DEBUG("FileReader readBlockAt");
+  DEBUG_FULL("FileReader readBlockAt");
 
   size_t size = std::min(FileReader::defaultBlockSize, file.size - pos);
 
@@ -965,7 +994,7 @@ TSInput FileReader::asTsInput() {
   input.payload = this;
   input.read = &FileReader::tsRead;
   input.encoding = TSInputEncodingUTF8;
-  DEBUG("FileReader asTsInput");
+  DEBUG_FULL("FileReader asTsInput");
   return input;
 };
 
@@ -974,12 +1003,12 @@ const char *FileReader::tsRead(void *payload, uint32_t byte_index,
   auto *reader = static_cast<FileReader *>(payload);
 
   if (byte_index >= reader->file.size) {
-    DEBUG("FileReader asTsInput finished");
+    DEBUG_FULL("FileReader asTsInput finished");
     *bytes_read = 0;
     return nullptr;
   }
 
-  DEBUG("FileReader asTsInput read upto - " << byte_index);
+  DEBUG_FULL("FileReader asTsInput read upto - " << byte_index);
   size_t blockSize =
       std::min(reader->blockSize, reader->file.size - byte_index);
 
@@ -1000,7 +1029,7 @@ TSPoint _getP(size_t byteOffset, const std::vector<size_t>& rowOffsets) {
   if (rowOffsets.empty())
     return {0, static_cast<uint32_t>(byteOffset)};
 
-  DEBUG("_getP called - " << rowOffsets.size());
+  DEBUG_FULL("_getP called - " << rowOffsets.size());
   auto begin = rowOffsets.data();
   auto end   = begin + rowOffsets.size();
   // Find the first row offset that is GREATER than our byte
@@ -1258,6 +1287,8 @@ FileReader::block FileReader::next() {
     return {nullptr, 0};
   }
 
+  DEBUG_FULL("FileReader next - " << file.pathStr);
+
   size_t currentBlockSize = 0;
   if (file.size - pos < defaultBlockSize) {
     currentBlockSize = file.size - pos;
@@ -1285,6 +1316,8 @@ FileReader::block FileReader::prev() {
   if (!buf || pos <= 0 || file.size == 0) {
     return {nullptr, 0};
   }
+
+  DEBUG_FULL("FileReader prev - " << file.pathStr);
 
   size_t currentBlockSize = std::min(FileReader::defaultBlockSize, pos);
 
@@ -1324,12 +1357,13 @@ void FileReader::reset() {
 };
 
 FileReader::~FileReader() {
-  DEBUG("FileReader destroyed");
+  DEBUG_FULL("FileReader destroyed");
   if (iFileStream.is_open()) {
     iFileStream.close();
   }
   if (buf)
     delete[] buf;
+  buf = nullptr;
 };
 
 // FileWriter
@@ -1340,7 +1374,7 @@ const std::vector<size_t>& FileWriter::getRowOffsets(){
 }
 
 FileWriter::FileWriter(const FileSnapshot snap) {
-  DEBUG("FileWriter ctor with snap");
+  DEBUG_FULL("FileWriter ctor with snap");
   this->snap = snap;
   file = snap.file;
   _isValid = file.isValid;
@@ -1349,7 +1383,7 @@ FileWriter::FileWriter(const FileSnapshot snap) {
 };
 
 FileWriter::FileWriter(std::string path) {
-  DEBUG("FileWriter ctor with path");
+  DEBUG_FULL("FileWriter ctor with path");
   FileReader tmp(path);
   if(tmp.bufSize != tmp.getFile().size){
     tmp.sync();
@@ -1361,7 +1395,7 @@ FileWriter::FileWriter(std::string path) {
 }
 
 FileWriter::FileWriter(File f) {
-  DEBUG("FileWriter ctor with file");
+  DEBUG_FULL("FileWriter ctor with file");
   FileReader tmp(f);
   if(tmp.bufSize != tmp.getFile().size){
     tmp.sync();
@@ -1373,7 +1407,7 @@ FileWriter::FileWriter(File f) {
 }
 
 FileWriter::FileWriter(const FileWriter &copy) {
-  DEBUG("FileWriter copy ctor");
+  DEBUG_FULL("FileWriter copy ctor");
   snap = copy.snap;
   file = copy.file;
   rowOffsets = copy.rowOffsets;
@@ -1381,19 +1415,19 @@ FileWriter::FileWriter(const FileWriter &copy) {
 };
 
 FileWriter::~FileWriter() {
-  DEBUG("FileReader destroyed");
+  DEBUG_FULL("FileReader destroyed");
   if (oFileStream.is_open())
     oFileStream.close();
 };
 
 bool FileWriter::backup(const std::string &suffix) {
-  DEBUG("FileWriter backup");
   std::string bkpPath;
   bkpPath = file.pathStr + suffix;
   if (fs::exists(bkpPath)) {
     bkpPath =
         file.pathStr + "." + std::to_string(snap.lastModified) + "." + suffix;
   }
+  INFO("FileWriter backup -" << bkpPath);
   std::ofstream bkp = std::ofstream(bkpPath, std::ios::out | std::ios::trunc);
   bkp << snap.cont;
 
@@ -1411,7 +1445,7 @@ TSPoint FileWriter::getP(size_t byteOffset) {
 };
 
 bool FileWriter::save() {
-  DEBUG("FileWriter save");
+  INFO("FileWriter save " << file.pathStr);
   std::ofstream bkp =
       std::ofstream(file.pathStr, std::ios::out | std::ios::trunc);
   snap.cont.shrink_to_fit();
@@ -1428,7 +1462,7 @@ bool FileWriter::save() {
 };
 
 bool FileWriter::flush(std::string &path) {
-  DEBUG("FileWriter flush");
+  INFO("FileWriter flush to " << path);
   std::ofstream target = std::ofstream(path, std::ios::out | std::ios::trunc);
   target << snap.cont;
   target.flush();
@@ -1451,7 +1485,7 @@ FileWriter &FileWriter::copy(std::string &sourcePath) {
     throw std::invalid_argument(
         "path to source file does not exist for: copy path-" + sourcePath);
   }
-  DEBUG("FileWriter copy ctor");
+  DEBUG_FULL("FileWriter copy ctor");
   FileReader tmp(sourcePath);
   File curr = snap.file;
   snap = tmp.snapshot();
@@ -1473,7 +1507,7 @@ FileWriter &FileWriter::insert(size_t offset, std::string &slice) {
 };
 
 FileWriter &FileWriter::write(const std::string &content) {
-  DEBUG("FileWriter write");
+  DEBUG("FileWriter write content");
   snap.cont = std::string(content);
   UPDATE_SNAP_META(snap);
 }
@@ -1546,7 +1580,7 @@ FileWriter &FileWriter::insertRow(size_t row, const std::string &cont) {
 FileWriter &FileWriter::replaceAll(std::string pattern,
                                    std::string templateOrResult, uint32_t opt) {
 
-  DEBUG("FileWriter replaceAll - " << pattern  << " to " << templateOrResult);
+  DEBUG("FileWriter replaceAll start - " << pattern  << " to " << templateOrResult);
   pcre2_code *re = PcreCache::global().get(pattern, opt);
 
   PCRE2_SIZE outLength = snap.cont.length() * 2;
@@ -1586,6 +1620,7 @@ substitute:
 
   snap.cont.assign(reinterpret_cast<char *>(buffer.data()), outLength);
 
+  DEBUG("FileWriter replaceAll done - " << pattern  << " to " << templateOrResult);
   UPDATE_SNAP_META(snap);
 };
 
@@ -1593,7 +1628,7 @@ FileWriter &FileWriter::replace(std::string pattern,
                                 std::string templateOrResult, size_t nth,
                                 uint32_t opt) {
 
-  DEBUG("FileWriter replace - " << pattern  << " to " << templateOrResult);
+  DEBUG("FileWriter replace start - " << pattern  << " to " << templateOrResult);
   FileReader snapReader(snap);
 
   pcre2_code *re = PcreCache::global().get(pattern, opt);
@@ -1644,6 +1679,7 @@ substitute:
     throw std::runtime_error("PCRE2 substitution failed");
   }
 
+  DEBUG("FileWriter replace done - " << pattern  << " to " << templateOrResult);
   return write(start_offset, reinterpret_cast<char *>(buffer.data()),
                outLength);
 };
@@ -1659,13 +1695,32 @@ FileEditor::FileEditor() {
 #undef GENERATE_MAP
 };
 
+/*
+ReaderWriterEngineTree getReaderWriterEngineTree(const File& file, const TSLanguage* lang){
+   // TODO: these should have move ctor, otherwise they are copied on return
+   FileReader fr(file);
+   FileWriter fw(fr.snapshot());
+   FileEditor edt;
+   TSEngine eng(lang);
+   CSTTree t = eng.parse(fw); 
+   return {fr, fw, edt, eng, t};
+}
+*/
+#define ReaderWriterEngineTree(file,lang)            \
+                     FileReader fr(file);            \
+                     fr.sync();                      \
+                     FileWriter fw(fr.snapshot());   \
+                     FileEditor edt;                 \
+                     TSEngine eng(lang);             \
+                     CSTTree t = eng.parse(fw);      
+
 void FileEditor::queue(FileEditor::Edit e) { 
-  DEBUG("FileEditor queue");
+  DEBUG_FULL("FileEditor queue");
   operations.push_back(e);
 };
 
 void FileEditor::reset() {
-  DEBUG("FileEditor queue");
+  DEBUG_FULL("FileEditor queue");
   operations.clear();
   errors.clear();
 };
@@ -1967,7 +2022,7 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
 
 // DirWalker
 DirWalker::DirWalker(std::string dir) {
-  DEBUG("DirWalker ctor");
+  DEBUG_FULL("DirWalker ctor");
   path = dir;
   _isValid = fs::exists(dir);
 };
@@ -1982,7 +2037,9 @@ void DirWalker::copyConfig(DirWalker* other){
   filesOnly     = other->filesOnly;
 }
 
-DirWalker::~DirWalker() {};
+DirWalker::~DirWalker() {
+  DEBUG_FULL("DirWalker destroyed");
+};
 
 template <typename Action> DirWalker::STATUS DirWalker::walk(Action &&action) {
   int p = 0;
@@ -1995,7 +2052,9 @@ DirWalker::STATUS DirWalker::walk(Action &&action, Payload &payload) {
   for(auto rule : ignore){
     repo.addIgnoreRule(rule);
   }
+  DEBUG("DirWalker walk begin - " << path);
   auto res = walk(repo, action, payload);
+  DEBUG("DirWalker walk begin - " << path);
   return res;
 };
 
@@ -2006,7 +2065,7 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
   if (!_isValid)
     return FAILED;
 
-  DEBUG("DirWalker walk begin - " << path);
+  DEBUG_FULL("DirWalker walk begin - " << path);
   // TODO: this should be cached at walker level so that next walk call does not load same entries again
   // until the path is changed
   std::vector<fs::directory_entry> entries(
@@ -2018,7 +2077,7 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
     File file(entries[i]);
     file.level = level;
     
-    DEBUG("DirWalker walk entry - " << file.pathStr);
+    DEBUG_FULL("DirWalker walk entry - " << file.pathStr);
     // TODO: the filtering must happen before the File is created as directory_entry is heavy?
     if (obeyGitIgnore && repo.isPathIgnored(file.path)) {
       continue;
@@ -2040,10 +2099,13 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
     }
 
     if (actRes == ACTION::SKIP) {
+      DEBUG("DirWalker skip - " << file.pathStr);
       continue;
     } else if (actRes == ACTION::STOP) {
+      DEBUG("DirWalker stop - " << file.pathStr);
       return STATUS::STOPPED;
     } else if (actRes == ACTION::ABORT) {
+      DEBUG("DirWalker abort - " << file.pathStr);
       return STATUS::ABORTED;
     } else if (actRes == ACTION::CONTINUE &&
         !((file.name == ".") || (file.name == "..")) && file.isDir &&
@@ -2073,13 +2135,12 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
         child.recursive = false;
         child.inverted = true;
 
-        DEBUG("DirWalker walk done - " << path);
+        DEBUG_FULL("DirWalker walk done - " << path);
         return child.walk(repo, action, payload);
       }
     }
   }
 
-  DEBUG("DirWalker walk done - " << path);
   return STATUS::DONE;
 };
 
@@ -2116,7 +2177,7 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
     File file(entries[i]);
     file.level = level;
 
-    DEBUG("DirWalker walk with pool entry - " << file.pathStr);
+    DEBUG_FULL("DirWalker walk with pool entry - " << file.pathStr);
 
     // If any thread previously returned ABORT, quit now
     if (abortSignal->load()) {
@@ -2144,11 +2205,15 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
       }
 
       if (actRes == ACTION::STOP) {
+        DEBUG("DirWalker with pool stop - " << file.pathStr);
         return;
       }
-      if (actRes == ACTION::SKIP)
+      if (actRes == ACTION::SKIP){
+        DEBUG("DirWalker with pool skip - " << file.pathStr);
         continue;
+      }
       if (actRes == ACTION::ABORT) {
+        DEBUG("DirWalker with pool abort - " << file.pathStr);
         abortSignal->store(true);
         return;
       }
@@ -2175,7 +2240,7 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
       }
     } else {
 
-      DEBUG("DirWalker walk with pool enqueue job - " << file.pathStr);
+      DEBUG_FULL("DirWalker walk with pool enqueue job - " << file.pathStr);
       // create a anonlymous class that has action and file in constructor
       pool.enqueue([action, file, &repo, abortSignal, &payload]() {
         if (abortSignal->load())
@@ -2185,6 +2250,7 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
         ACTION actRes = callAction(action, OPENED, file, repo, payload);
         DEBUG("DirWalker walk with pool job done- " << file.pathStr);
         if (actRes == ACTION::ABORT) {
+          DEBUG("DirWalker with pool abort called");
           abortSignal->store(true);
         }
       });
@@ -2196,15 +2262,16 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
 pcre2_code * PcreCache::get(const std::string &pattern, uint32_t opts) {
     Key k{pattern, opts};
     {
-      DEBUG("PcreCache lock mtx");
+      DEBUG_FULL("PcreCache lock mtx");
       std::lock_guard<std::mutex> lock(mtx);
       auto it = cache.find(k);
-      DEBUG("PcreCache found from cache");
-      if (it != cache.end())
+      if (it != cache.end()){
+        DEBUG_FULL("PcreCache found from cache");
         return it->second;
+      }
     }
 
-    DEBUG("PcreCache compile pattern");
+    DEBUG_FULL("PcreCache compile pattern - " << pattern);
     int errornumber;
     PCRE2_SIZE erroroffset;
     pcre2_code *re = pcre2_compile((PCRE2_SPTR)pattern.c_str(),
@@ -2218,7 +2285,7 @@ pcre2_code * PcreCache::get(const std::string &pattern, uint32_t opts) {
           "': " + reinterpret_cast<char *>(buf));
     }
     pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
-    DEBUG("PcreCache compile done");
+    DEBUG_FULL("PcreCache compile pattern done - " << pattern);
     std::lock_guard<std::mutex> lock(mtx);
     auto [it, _] = cache.emplace(k, re);
     return it->second;
@@ -2227,11 +2294,11 @@ pcre2_code * PcreCache::get(const std::string &pattern, uint32_t opts) {
 //TSEnginePool 
 std::shared_ptr<TSEngine> TSEnginePool::get(const TSLanguage* lang){
   
-  DEBUG("TSEnginePool get lock mtx");
+  DEBUG_FULL("TSEnginePool get lock mtx");
   std::lock_guard<std::mutex> lock(mtx);
   auto it = engines.find(lang);
   if (it != engines.end()){
-    DEBUG("TSEnginePool get found from cache");
+    DEBUG_FULL("TSEnginePool get found from cache");
     return it->second;
   }
 
@@ -2243,12 +2310,12 @@ std::shared_ptr<TSEngine> TSEnginePool::get(const TSLanguage* lang){
 // QueryCache
 TSQuery* QueryCache::get(TSEngine* engine, const std::string& pattern) {
 
-  DEBUG("QueryCache get lock mtx");
+  DEBUG_FULL("QueryCache get lock mtx");
   std::lock_guard<std::mutex> lock(mtx);
   auto key = std::make_pair(engine, pattern);
   auto it = cache.find(key);
   if (it != cache.end()){
-    DEBUG("QueryCache found from cache");
+    DEBUG_FULL("QueryCache found from cache");
     return it->second;
   }
   
@@ -2260,20 +2327,20 @@ TSQuery* QueryCache::get(TSEngine* engine, const std::string& pattern) {
 
 // ThreadPool
 ThreadPool::ThreadPool(size_t maxCount) {
-  DEBUG("ThreadPool ctor");
+  DEBUG_FULL("ThreadPool ctor");
   this->maxCount = maxCount;
   stop = false;
   for (size_t i = 0; i < maxCount; ++i) {
 
     workers.emplace_back([this] {
 
-      DEBUG("ThreadPool worker ctor");
+      DEBUG_FULL("ThreadPool worker ctor");
       // constructor of Thread callable
       while (true) {
-        DEBUG("ThreadPool worker next");
+        DEBUG_FULL("ThreadPool worker next");
         std::function<void()> job;
         {
-          DEBUG("ThreadPool worker lock queue");
+          DEBUG_FULL("ThreadPool worker lock queue");
           std::unique_lock<std::mutex> lock(queueMutex);
           DEBUG("ThreadPool worker wait for task");
           // Wait until there is a task or we are stopping
@@ -2297,6 +2364,7 @@ ThreadPool::ThreadPool(size_t maxCount) {
   }
 }
 ThreadPool::~ThreadPool() {
+  DEBUG_FULL("ThreadPool destroyed");
   {
     std::unique_lock<std::mutex> lock(queueMutex);
     stop = true;
@@ -2320,17 +2388,18 @@ template <class F> void ThreadPool::enqueue(F &&f) {
 
 CSTTree::CSTTree(TSTree *tree, std::string_view source, TSEngine &parent)
     : source(source), parent(parent) {
-  DEBUG("CSTTRee ctor");
+  DEBUG_FULL("CSTTree ctor");
   this->tree = tree;
 };
 
 CSTTree::~CSTTree() { 
-  DEBUG("CSTTree destroyed");
+  DEBUG_FULL("CSTTree destroyed");
   ts_tree_delete(tree);
+  tree = nullptr;
 };
 
 std::string CSTTree::sTree() {
-  DEBUG("CSTTree sTree");
+  DEBUG_FULL("CSTTree sTree");
   TSNode node = ts_tree_root_node(tree);
   char *raw = ts_node_string(node);
   auto res = std::string(raw);
@@ -2339,7 +2408,7 @@ std::string CSTTree::sTree() {
 };
 
 void CSTTree::getQueryForNode(TSNode node, std::string &query, size_t level) {
-  DEBUG("CSTTree getQueryForNode");
+  DEBUG_FULL("CSTTree getQueryForNode");
   query.append(std::string(level, '\t'));
   query.append("(");
   query.append(ts_node_type(node));
@@ -2363,7 +2432,7 @@ void CSTTree::getQueryForNode(TSNode node, std::string &query, size_t level) {
 };
 
 std::string CSTTree::getText(TSNode n){
-  DEBUG("CSTTree getText");
+  DEBUG_FULL("CSTTree getText");
   auto sb = ts_node_start_byte(n);
   auto eb = ts_node_end_byte(n);
   // TODO: should this return string_view or should CSTTree hold its own sourc string 
@@ -2371,7 +2440,7 @@ std::string CSTTree::getText(TSNode n){
 };
 
 std::string CSTTree::asQuery() {
-  DEBUG("CSTTree asQuery");
+  DEBUG_FULL("CSTTree asQuery");
   std::string query;
   TSNode node = ts_tree_root_node(tree);
   getQueryForNode(node, query);
@@ -2463,15 +2532,16 @@ TSEngine::TSEngine(const TSLanguage *lang) {
   this->lang = lang;
   // TODO: should parser be a shared pointer or should it come from pool
   //
-  DEBUG("TSEngine ctor");
+  DEBUG_FULL("TSEngine ctor");
   TSParser *parser = ts_parser_new();
   ts_parser_set_language(parser, lang);
   this->parser = parser;
 };
 
 TSEngine::~TSEngine() { 
-  DEBUG("TSEngine destroyed");
-  ts_parser_delete(this->parser);
+  DEBUG_FULL("TSEngine destroyed");
+  ts_parser_delete(parser);
+  parser = nullptr;
 };
 
 const CSTTree TSEngine::parse(FileReader &reader) {
@@ -2508,7 +2578,7 @@ const CSTTree TSEngine::parse(const CSTTree &old, std::string_view source) {
 };
 
 TSQuery *TSEngine::queryNew(std::string &queryExpr) {
-  DEBUG("TSEngine queryNew");
+  DEBUG("TSEngine queryNew " << queryExpr);
   uint32_t errorOffset;
   TSQueryError error;
 
@@ -2549,13 +2619,17 @@ void LibGit::init(){
 
 LibGit::LibGit(git_repository *repo) {
   assert(repo != nullptr);
-  DEBUG("LibGit ctor");
+  DEBUG_FULL("LibGit ctor");
   init();
   this->repo = make_repo(repo);
   root = git_repository_workdir(repo);
+  setSignature(username, email);
 }
 
-LibGit::~LibGit(){}
+LibGit::~LibGit(){
+  DEBUG_FULL("LibGit destroyed");
+  git_signature_free(signature);
+}
 
 LibGit::RepoPtr LibGit::make_repo(git_repository *raw){
     return RepoPtr(raw, [](git_repository* r) {
@@ -2580,8 +2654,8 @@ LibGit LibGit::clone(std::string url, std::string path, bool shallow){
 
     auto cloneProgressCb = 
     [](const git_indexer_progress *stats, void *payload) -> int {
-      printf("Cloning progrss %d/%d objects\r",
-          stats->received_objects,
+      INFO("Cloning progrss %d/%d objects\r" << 
+          stats->received_objects <<
           stats->total_objects);
       printf("\n");
       return 0;
@@ -2618,7 +2692,7 @@ bool LibGit::isPathIgnored(fs::path path){
 }
 
 bool LibGit::isPathIgnored(std::string path){
-  DEBUG("LibGit isPathIgnored");
+  DEBUG_FULL("LibGit isPathIgnored");
   int ignored;
   if(git_ignore_path_is_ignored(&ignored, repo.get(), path.c_str()) < 0){
     return false;
@@ -2626,23 +2700,144 @@ bool LibGit::isPathIgnored(std::string path){
   return ignored == 1;
 }
 
-void LibGit::add(fs::path &path) {
+void LibGit::add(const fs::path &path) {
   git_index *index = nullptr;
 
-  DEBUG("LibGit add start");
   fs::path relPath = fs::relative(path, root);
 
+  DEBUG("LibGit add " << relPath.c_str());
+
   std::lock_guard<std::mutex> lock(gitMutex);
-  
-  git_repository_index(&index, repo.get());
-  git_index_add_bypath(index, relPath.c_str());
-  git_index_write(index);
+  int err = 0;
+  err = git_repository_index(&index, repo.get());
+  err = git_index_add_bypath(index, relPath.c_str());
+  err = git_index_write(index);
   git_index_free(index);
-  DEBUG("LibGit add done");
+
+  if(err < 0){
+    const git_error* e = git_error_last();
+    throw std::runtime_error(std::string("Unable to add file ") + relPath.c_str() + " due to : " +
+        (e && e->message ? e->message : "Unknown"));
+  }
 };
 
 void LibGit::addIgnoreRule(std::string rule){
   git_ignore_add_rule(repo.get(), rule.c_str());
+}
+
+void LibGit::checkout(std::string blobId){
+  DEBUG("LibGit checkout - " << blobId);
+
+  std::lock_guard<std::mutex> lock(gitMutex);
+  git_object *target = nullptr;
+  git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
+  opts.checkout_strategy = GIT_CHECKOUT_SAFE;
+  git_reference *ref = nullptr;
+
+  int err = 0;
+
+  if (git_reference_dwim(&ref, repo.get(), blobId.c_str()) == 0) {
+    //It's a branch/tag
+
+    const char* refname = git_reference_name(ref);
+    DEBUG("LibGit branch/tag ref - " << refname);
+    err = git_repository_set_head(repo.get(), refname);
+    err = git_checkout_head(repo.get(), &opts);
+    git_reference_free(ref);
+  } else {
+    //It's a commit/tree
+    
+    DEBUG("LibGit commit/tree target - " << blobId);
+    err = git_revparse_single(&target, repo.get(), blobId.c_str()); 
+    err = git_checkout_tree(repo.get(), target, &opts);
+    err = git_repository_set_head_detached(repo.get(), git_object_id(target)); 
+    git_object_free(target);  
+  }
+
+  if(err < 0){
+    const git_error* e = git_error_last();
+    throw std::runtime_error(std::string("Unable to checkout ") + blobId + " due to : " +
+        (e && e->message ? e->message : "Unknown"));
+  }
+}
+
+bool LibGit::branchExists(std::string name){
+  git_reference* ref;
+  bool exists = git_reference_dwim(&ref, repo.get(), name.c_str()) == 0;
+  git_reference_free(ref);
+  return exists;
+}
+
+void LibGit::branchCreate(std::string name){
+  DEBUG("LibGit branchCreate - " << name);
+  std::lock_guard<std::mutex> lock(gitMutex);
+  git_reference *ref = nullptr;
+  git_object *head = nullptr;
+  git_commit *commit = nullptr;
+  
+  int err = 0;
+  err = git_revparse_single(&head, repo.get(), "HEAD");  
+  err = git_object_peel((git_object**)&commit, head, GIT_OBJECT_COMMIT); 
+  err = git_branch_create(&ref, repo.get(), name.c_str(), commit, 0); 
+
+  git_commit_free(commit);
+  git_object_free(head);
+  git_reference_free(ref);
+
+  if(err < 0){
+    const git_error* e = git_error_last();
+    throw std::runtime_error(std::string("Unable tocreate branch ") + name + " due to : " +
+        (e && e->message ? e->message : "Unknown"));
+  }
+}
+
+void LibGit::setSignature(std::string username, std::string email){
+  this->username = username;
+  this->email = email;
+  if (git_signature_new(&signature, username.c_str(), email.c_str(), time(nullptr), 0) < 0) {
+    throw std::runtime_error("Failed to set signature");
+  }
+}
+
+void LibGit::commit(std::string message) {
+  git_index *index = nullptr;
+  int err = 0;
+  err = git_repository_index(&index, repo.get()); 
+  err = git_index_read(index, 0);
+  /*
+   if (git_index_add_all(index, NULL, 0, NULL, NULL) < 0) {
+     git_index_free(index);
+     throw std::runtime_error("Failed to add all files to index");
+   }
+   */
+  git_oid tree_id;
+  git_tree *tree = nullptr;
+  git_reference *ref = nullptr;
+  git_commit *parent = nullptr;
+  git_oid commit_id;
+  err = git_index_write_tree(&tree_id, index);
+  err = git_tree_lookup(&tree, repo.get(), &tree_id);
+  err = git_repository_head(&ref, repo.get());
+  err = git_commit_lookup(&parent, repo.get(), git_reference_target(ref));
+  err = git_commit_create_v(&commit_id, repo.get(), "HEAD", signature, signature, NULL, message.c_str(), tree, parent ? 1 : 0, parent);
+  git_tree_free(tree);
+  git_index_free(index);
+  git_commit_free(parent);
+  git_reference_free(ref);
+
+  if(err < 0){
+    const git_error* e = git_error_last();
+    throw std::runtime_error(std::string("Unable to create commit - ") + message + " due to : " +
+        (e && e->message ? e->message : "Unknown"));
+  }
+}
+
+std::vector<git_diff> LibGit::diff(){
+
+}
+
+std::vector<git_diff> LibGit::diff(std::string blobId){
+
 }
 
 
