@@ -124,7 +124,6 @@ public:
   std::string_view get();
   std::string_view get(size_t from, size_t to);
   std::string_view getLine(size_t row);
-  //TODO:
   std::string_view getIndent(size_t row);
 
   void reset();
@@ -245,7 +244,8 @@ public:
 
   FileWriter &append(std::string &cont);
   FileWriter &insert(size_t offset, std::string &newCont);
-  FileWriter &insertRow(size_t row, const std::string &line);
+  FileWriter &insertRowBefore(size_t row, const std::string &line, bool preserveIndent = false);
+  FileWriter &insertRowAfter(size_t row, const std::string &line, bool preserveIndent = false);
   FileWriter &deleteRow(size_t row);
   FileWriter &deleteCont(size_t from, size_t to);
 
@@ -287,6 +287,7 @@ public:
   void addIgnoreRule(std::string rule);
 
   void add(const fs::path &path);
+  void addAll();
 
   void checkout(std::string blobId);
   void branchCreate(std::string name);
@@ -437,10 +438,6 @@ public:
     }
     return actRes;
   }
-
-  // TODO:
-  bool isPathIgnored(std::string path);
-
 
   template <typename Action> // Action is any callable
   STATUS walk(Action &&action);
@@ -934,6 +931,19 @@ std::string_view FileReader::getLine(size_t row) {
   }
 
   return get(rowOffsets[row], rowOffsets[row + 1]);
+}
+
+std::string_view FileReader::getIndent(size_t row){
+  std::string_view line = getLine(row);
+  int end = 0;
+  for(int i = 0; i < line.length(); i++){
+    auto ch = line[i];
+    if(!(ch == ' ' || ch == '\t')){
+      end = i;
+      break;
+    }
+  }
+  return line.substr(0, end);
 }
 
 FileReader::block FileReader::load(size_t from, size_t to) {
@@ -1529,7 +1539,6 @@ FileWriter &FileWriter::write(size_t offset, std::string &cont) {
 };
 
 FileWriter &FileWriter::write(size_t from, size_t to, std::string &cont) {
-  assert(from >= 0);
   assert(to < snap.cont.size());
   DEBUG("FileWriter write from - " << from << " to - " << to);
   snap.cont.erase(from, to-from);
@@ -1538,7 +1547,6 @@ FileWriter &FileWriter::write(size_t from, size_t to, std::string &cont) {
 };
 
 FileWriter &FileWriter::deleteCont(size_t from, size_t to) {
-  assert(from >= 0);
   assert(to < snap.cont.size());
   DEBUG("FileWriter delete " << from  << " to " << to);
   snap.cont.erase(from, to - from);
@@ -1549,7 +1557,6 @@ FileWriter &FileWriter::deleteRow(size_t row) {
   UPDATE_ROW_OFFSETS(snap.cont, snap.cont.length());
 
   assert(rowOffsets.size() > row);
-  assert(row > -1);
 
   DEBUG("FileWriter deleteRow - " << row);
 
@@ -1560,23 +1567,40 @@ FileWriter &FileWriter::deleteRow(size_t row) {
   UPDATE_SNAP_META(snap);
 };
 
-FileWriter &FileWriter::insertRow(size_t row, const std::string &cont) {
+FileWriter &FileWriter::insertRowBefore(size_t row, const std::string &cont, bool preserveIndent) {
   UPDATE_ROW_OFFSETS(snap.cont, snap.cont.length());
 
   assert(rowOffsets.size() > row);
-  assert(row > -1);
 
   DEBUG("FileWriter insertRow - " << row);
 
   bool hasEndl = cont[cont.length() - 1] == '\n';
   size_t rowOffset = rowOffsets[row];
 
-  snap.cont.insert(rowOffset, cont);
+  std::string indent = "";
+
+  if(preserveIndent){
+    std::string line = snap.cont.substr(rowOffset, rowOffset - rowOffsets[row+1] + 1);
+    int end = 0;
+    for(int i = 0; i < line.length(); i++){
+      auto ch = line[i];
+      if(!(ch == ' ' || ch == '\t')){
+        end = i;
+        break;
+      }
+    }
+    indent=line.substr(0, end);
+  }
+
+  snap.cont.insert(rowOffset, indent+cont);
   if (!hasEndl)
-    snap.cont.insert(rowOffset + cont.length(), 1, '\n');
+    snap.cont.insert(rowOffset + indent.length() + cont.length(), 1, '\n');
   UPDATE_SNAP_META(snap);
 };
 
+FileWriter &FileWriter::insertRowAfter(size_t row, const std::string &cont, bool preserveIndent) {
+  return insertRowBefore(row+1, cont, preserveIndent);
+}
 FileWriter &FileWriter::replaceAll(std::string pattern,
                                    std::string templateOrResult, uint32_t opt) {
 
@@ -1872,7 +1896,54 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
     }
     case FileEditor::OP::MARK:
     {
-      assert(0 && "NOT_IMPLEMENTED"); // TODO
+      size_t rowStart = edit.range.start_point.row;
+      size_t rowEnd =   edit.range.end_point.row;
+      std::string text = edit.change;
+      std::string additional = edit.context;
+
+      struct MarkInsert {
+        size_t row;
+        std::string text;
+        std::string tag;
+      };
+
+      MarkInsert ops[] = {
+        {rowEnd + 1, text, "END"}, // After
+        {rowStart, additional, "INFO"},
+        {rowStart, text, "START"}
+      };
+
+      for (auto &op : ops)
+      {
+        if(op.text.empty()){ // additional info
+          continue;
+        }
+
+        size_t byteStart = writer.getRowOffsets()[op.row];
+        size_t byteEndOld = byteStart;
+
+        writer.insertRowBefore(op.row, op.text+" "+op.tag, true);
+
+        size_t byteEndNew = writer.getRowOffsets()[op.row + 1];
+
+        TSInputEdit te1 = te;
+        te1.start_byte = byteStart;
+        te1.old_end_byte = byteEndOld;
+        te1.new_end_byte = byteEndNew;
+
+        te1.start_point.row = op.row;
+        te1.start_point.column = 0;
+
+        te1.old_end_point.row = op.row;
+        te1.old_end_point.column = 0;
+
+        te1.new_end_point.row = op.row + 1;
+        te1.new_end_point.column = 0;
+
+        original.edit(te1, writer.snapshot().cont);
+      }
+
+      break;
     }
     case FileEditor::OP::VALIDATE_CST: {
       for (auto err : original.getErrors()) {
@@ -2074,20 +2145,27 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
   );
 
   for (size_t i = 0; i < entries.size(); i++) {
-    File file(entries[i]);
-    file.level = level;
-    
-    DEBUG_FULL("DirWalker walk entry - " << file.pathStr);
-    // TODO: the filtering must happen before the File is created as directory_entry is heavy?
-    if (obeyGitIgnore && repo.isPathIgnored(file.path)) {
+
+    auto entry = entries[i];
+    auto entryPath = entry.path();
+
+    DEBUG_FULL("DirWalker walk with pool entry - " << entryPath);
+
+    if (obeyGitIgnore && repo.isPathIgnored(entryPath)) {
       continue;
     }
 
+    auto ext = entryPath.extension();
+
     if(!matchExt.empty() 
-        && !file.isDir
-        && (matchExt.find(file.ext) == matchExt.end())){
+        && !entry.is_directory()
+        && (matchExt.find(ext.string()) == matchExt.end())){
       continue;
     }
+
+    File file(entries[i]);
+    file.level = level;
+
   
     ACTION actRes;
     if(!filesOnly || !file.isDir){
@@ -2174,26 +2252,31 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
                                            fs::directory_iterator());
 
   for (int i = 0; i < entries.size(); i++) {
-    File file(entries[i]);
-    file.level = level;
 
-    DEBUG_FULL("DirWalker walk with pool entry - " << file.pathStr);
+    auto entry = entries[i];
+    auto entryPath = entry.path();
+
+    DEBUG_FULL("DirWalker walk with pool entry - " << entryPath);
 
     // If any thread previously returned ABORT, quit now
     if (abortSignal->load()) {
       return;
     }
 
-    // TODO: the filtering must happen before the File is created as directory_entry is heavy?
-    if (obeyGitIgnore && repo.isPathIgnored(file.path)) {
+    if (obeyGitIgnore && repo.isPathIgnored(entryPath)) {
       continue;
     }
 
+    auto ext = entryPath.extension();
+
     if(!matchExt.empty() 
-        && !file.isDir
-        && (matchExt.find(file.ext) == matchExt.end())){
+        && !entry.is_directory()
+        && (matchExt.find(ext.string()) == matchExt.end())){
       continue;
     }
+
+    File file(entries[i]);
+    file.level = level;
 
     if(!filesOnly || !file.isDir){
 
@@ -2721,6 +2804,20 @@ void LibGit::add(const fs::path &path) {
   }
 };
 
+void LibGit::addAll(){
+  DEBUG("LibGit add all - " << root);
+
+  std::lock_guard<std::mutex> lock(gitMutex);
+  int err = 0;
+  git_index* index;
+  err = git_repository_index(&index, repo.get());
+  err = git_index_add_all(index, NULL, 0, NULL, NULL);
+  git_index_free(index);
+  if(err < 0) {
+    throw std::runtime_error("Failed to add all files to index");
+  }
+}
+
 void LibGit::addIgnoreRule(std::string rule){
   git_ignore_add_rule(repo.get(), rule.c_str());
 }
@@ -2762,9 +2859,11 @@ void LibGit::checkout(std::string blobId){
 }
 
 bool LibGit::branchExists(std::string name){
-  git_reference* ref;
+  git_reference* ref = nullptr;
   bool exists = git_reference_dwim(&ref, repo.get(), name.c_str()) == 0;
-  git_reference_free(ref);
+  if(ref){
+    git_reference_free(ref);
+  }
   return exists;
 }
 
@@ -2805,10 +2904,6 @@ void LibGit::commit(std::string message) {
   err = git_repository_index(&index, repo.get()); 
   err = git_index_read(index, 0);
   /*
-   if (git_index_add_all(index, NULL, 0, NULL, NULL) < 0) {
-     git_index_free(index);
-     throw std::runtime_error("Failed to add all files to index");
-   }
    */
   git_oid tree_id;
   git_tree *tree = nullptr;
