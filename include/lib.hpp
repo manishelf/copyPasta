@@ -294,6 +294,8 @@ public:
   void setSignature(std::string username, std::string email);
   void commit(std::string message);
 
+  void resetHead(git_reset_t opt = GIT_RESET_HARD);
+
   bool branchExists(std::string name);
 
   // TODO:
@@ -428,13 +430,13 @@ public:
   static ACTION callAction(Action&& action, STATUS status, File file, LibGit& repo, Payload& payload){
     ACTION actRes;
     if constexpr (std::is_invocable_v<Action, STATUS, File, LibGit&, Payload &>) {
-      actRes = action(STATUS::OPENED, file, repo, payload);
+      actRes = action(status, file, repo, payload);
     } else if constexpr (std::is_invocable_v<Action, STATUS, File, LibGit&>) {
-      actRes = action(STATUS::OPENED, file, repo);
+      actRes = action(status, file, repo);
     } else if constexpr (std::is_invocable_v<Action, STATUS, File>) {
-      actRes = action(STATUS::OPENED, file);
+      actRes = action(status, file);
     } else{
-      throw std::invalid_argument("Invalid signature for walk action");
+      throw std::invalid_argument("Invalid signature for walk action, check DirWalker::callAction for valid signatures");
     }
     return actRes;
   }
@@ -1435,7 +1437,7 @@ bool FileWriter::backup(const std::string &suffix) {
   bkpPath = file.pathStr + suffix;
   if (fs::exists(bkpPath)) {
     bkpPath =
-        file.pathStr + "." + std::to_string(snap.lastModified) + "." + suffix;
+        file.pathStr + "." + std::to_string(snap.lastModified) + suffix;
   }
   INFO("FileWriter backup -" << bkpPath);
   std::ofstream bkp = std::ofstream(bkpPath, std::ios::out | std::ios::trunc);
@@ -1732,7 +1734,6 @@ ReaderWriterEngineTree getReaderWriterEngineTree(const File& file, const TSLangu
 */
 #define ReaderWriterEngineTree(file,lang)            \
                      FileReader fr(file);            \
-                     fr.sync();                      \
                      FileWriter fw(fr.snapshot());   \
                      FileEditor edt;                 \
                      TSEngine eng(lang);             \
@@ -1999,7 +2000,7 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
     {
       for (size_t i = 0; i < errors.size(); ++i) {
         const auto &err = errors[i];
-        std::cout << writer.snapshot().file.pathStr << ":"
+        std::cerr << writer.snapshot().file.pathStr << ":"
           << err.range.start_point.row + 1 << ":"
           << err.range.start_point.column + 1 << "\n";
 
@@ -2017,15 +2018,15 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
               size_t overlap_start = errX.range.start_byte;
               size_t overlap_end   = errX.range.end_byte;
 
-              std::cout << "CONFLICT detected:\n";
+              std::cerr << "CONFLICT detected:\n";
 
-              std::cout << "  Edit X : [" << x1 << ", " << x2 << "] -> \""
+              std::cerr << "  Edit X : [" << x1 << ", " << x2 << "] -> \""
                 << errX.edit.change << "\"\n";
 
-              std::cout << "  Edit Y : [" << y1 << ", " << y2 << "] -> \""
+              std::cerr << "  Edit Y : [" << y1 << ", " << y2 << "] -> \""
                 << errY.edit.change << "\"\n";
 
-              std::cout << "  Overlap: [" << overlap_start << ", "
+              std::cerr << "  Overlap: [" << overlap_start << ", "
                 << overlap_end << "]\n\n";
 
               i++; 
@@ -2033,14 +2034,14 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
             }
           case CST_ERROR: 
             {
-              std::cout << "CST_ERROR:\n";
+              std::cerr << "CST_ERROR:\n";
 
-              std::cout << "  Range: [" 
+              std::cerr << "  Range: [" 
                 << err.range.start_point.row << ":" << err.range.start_point.column
                 << " , " 
                 << err.range.end_point.row << ":" << err.range.end_point.column << "]\n";
 
-              std::cout << "  Edit : [" 
+              std::cerr << "  Edit : [" 
                 << err.edit.range.start_point.row << ":" << err.edit.range.start_point.column
                 << ", "
                 << err.edit.range.end_point.row << ":" << err.edit.range.end_point.column
@@ -2050,13 +2051,13 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
             }
           case CST_MISSING: 
             {
-              std::cout << "CST_MISSING:\n";
-              std::cout << "  Range: [" 
+              std::cerr << "CST_MISSING:\n";
+              std::cerr << "  Range: [" 
                 << err.range.start_byte
                 << ", " 
                 << err.range.end_byte 
                 << "]\n";
-              std::cout << "  Edit : [" 
+              std::cerr << "  Edit : [" 
                 << err.edit.range.start_byte
                 << ", " 
                 << err.edit.range.end_byte 
@@ -2278,28 +2279,25 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
     File file(entries[i]);
     file.level = level;
 
+    ACTION actRes;
     if(!filesOnly || !file.isDir){
+      actRes = callAction(action, QUEUING, file, repo, payload);
+    } else{
+      actRes = ACTION::CONTINUE;
+    }
 
-      ACTION actRes;
-      if(!filesOnly || !file.isDir){
-        actRes = callAction(action, QUEUING, file, repo, payload);
-      } else{
-        actRes = ACTION::CONTINUE;
-      }
-
-      if (actRes == ACTION::STOP) {
-        DEBUG("DirWalker with pool stop - " << file.pathStr);
-        return;
-      }
-      if (actRes == ACTION::SKIP){
-        DEBUG("DirWalker with pool skip - " << file.pathStr);
-        continue;
-      }
-      if (actRes == ACTION::ABORT) {
-        DEBUG("DirWalker with pool abort - " << file.pathStr);
-        abortSignal->store(true);
-        return;
-      }
+    if (actRes == ACTION::STOP) {
+      DEBUG("DirWalker with pool stop - " << file.pathStr);
+      return;
+    }
+    if (actRes == ACTION::SKIP){
+      DEBUG("DirWalker with pool skip - " << file.pathStr);
+      continue;
+    }
+    if (actRes == ACTION::ABORT) {
+      DEBUG("DirWalker with pool abort - " << file.pathStr);
+      abortSignal->store(true);
+      return;
     }
  
     if (!((file.name == ".") || (file.name == "..")) && file.isDir &&
@@ -2518,7 +2516,6 @@ std::string CSTTree::getText(TSNode n){
   DEBUG_FULL("CSTTree getText");
   auto sb = ts_node_start_byte(n);
   auto eb = ts_node_end_byte(n);
-  // TODO: should this return string_view or should CSTTree hold its own sourc string 
   return std::string(source.substr(sb, eb - sb));
 };
 
@@ -2574,7 +2571,6 @@ bool CSTTree::validate(const TSInputEdit ed, size_t insertL, size_t delL) {
 
 void CSTTree::edit(const TSInputEdit ed, const std::string &source) {
   DEBUG("CSTTree edit");
-  // TODO: currently source is tring view, should ip be string or string_view
   this->source = source;
   ts_tree_edit(tree, &ed);
   auto newTree = parent.parse(*this, source);
@@ -2901,6 +2897,9 @@ void LibGit::setSignature(std::string username, std::string email){
 void LibGit::commit(std::string message) {
   git_index *index = nullptr;
   int err = 0;
+
+  std::lock_guard<std::mutex> lock(gitMutex);
+
   err = git_repository_index(&index, repo.get()); 
   err = git_index_read(index, 0);
   /*
@@ -2925,6 +2924,23 @@ void LibGit::commit(std::string message) {
     throw std::runtime_error(std::string("Unable to create commit - ") + message + " due to : " +
         (e && e->message ? e->message : "Unknown"));
   }
+}
+
+void LibGit::resetHead(git_reset_t opt){
+    DEBUG("LibGit reset HEAD - " << opt);
+    git_object *target = NULL;
+    int err;
+    err = git_revparse_single(&target, repo.get(), "HEAD");
+
+    std::lock_guard<std::mutex> lock(gitMutex);
+    err = git_reset(repo.get(), target, opt, NULL);
+    git_object_free(target);
+    
+    if(err < 0){
+      const git_error* e = git_error_last();
+      throw std::runtime_error(std::string("Unable to create HEAD - ")  + " due to : " +
+          (e && e->message ? e->message : "Unknown"));
+    }
 }
 
 std::vector<git_diff> LibGit::diff(){
