@@ -202,15 +202,15 @@ public:
   }
 };
 
-#define STORE_ITER_INFO               \ 
+#define STORE_ITER_INFO               \
   size_t currPos = pos;               \
   bool currReadReverse = readReverse; \
   readReverse = false;                \
   pos = 0                             
 
-#define RESTORE_ITER_INFO             \ 
+#define RESTORE_ITER_INFO             \
   pos = currPos;                      \
-  readReverse = currReadReverse       \ 
+  readReverse = currReadReverse       \
 
 
 TSPoint _getP(size_t byteOffset, const std::vector<size_t>& rowOffsets);
@@ -594,7 +594,7 @@ public:
     cache.clear();
   }
 
-  pcre2_code *get(const std::string &pattern, uint32_t opts = PCRE2_CASELESS);
+  pcre2_code *get(const std::string &pattern, uint32_t opt_compile = PCRE2_CASELESS);
 
   // thread safe
   static PcreCache &global() {
@@ -1035,7 +1035,7 @@ TSRange _makeRange(size_t start, size_t end, const std::vector<size_t>& rowOffse
 }
 
 std::vector<FileReader::MatchResult> FileReader::find(std::string pattern,
-                                                      bool regex, uint32_t opt) {
+                                                      bool regex, uint32_t opt_compile) {
 
   
   std::vector<MatchResult> matches;
@@ -1043,7 +1043,7 @@ std::vector<FileReader::MatchResult> FileReader::find(std::string pattern,
     
   DEBUG("FileReader find called with - " + pattern);
   if (regex) {
-    pcre2_code *re = PcreCache::global().get(pattern, opt);
+    pcre2_code *re = PcreCache::global().get(pattern, opt_compile);
 
     return findWith(re);
   } else {
@@ -1087,7 +1087,7 @@ std::vector<FileReader::MatchResult> FileReader::findIn(const std::string &text,
 };
 
 std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
-                                                          uint32_t opt) {
+                                                          uint32_t opt_match) {
 
   DEBUG("FileReader findWith");
   std::vector<MatchResult> matches;
@@ -1104,7 +1104,7 @@ std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
     int rc = 0;
     PCRE2_SIZE startOffset = 0;
     while (true) {
-      rc = pcre2_match(re, subject, subject_length, startOffset, opt, match_data,
+      rc = pcre2_match(re, subject, subject_length, startOffset, opt_match, match_data,
           NULL);
 
       if (rc == PCRE2_ERROR_NOMATCH)
@@ -1221,7 +1221,7 @@ FileReader::block FileReader::next() {
     bufStart = pos;
   }
 
-  char *currPtr = &buf.data()[pos - bufSize];
+  char *currPtr = &buf.data()[pos];
 
   if (readReverse) {
     pos = (pos >= currentBlockSize) ? pos - currentBlockSize : 0;
@@ -1248,7 +1248,7 @@ FileReader::block FileReader::prev() {
     bufStart = pos;
   }
 
-  char *currPtr = &buf.data()[pos - bufSize];
+  char *currPtr = &buf.data()[pos];
 
   if (readReverse) {
     if (pos < fileEnd - 1) {
@@ -2232,8 +2232,8 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
 }
 
 // PcreCache 
-pcre2_code * PcreCache::get(const std::string &pattern, uint32_t opts) {
-    Key k{pattern, opts};
+pcre2_code * PcreCache::get(const std::string &pattern, uint32_t opt_compile) {
+    Key k{pattern, opt_compile};
     {
       DEBUG_FULL("PcreCache lock mtx");
       std::lock_guard<std::mutex> lock(mtx);
@@ -2248,7 +2248,7 @@ pcre2_code * PcreCache::get(const std::string &pattern, uint32_t opts) {
     int errornumber;
     PCRE2_SIZE erroroffset;
     pcre2_code *re = pcre2_compile((PCRE2_SPTR)pattern.c_str(),
-                                   PCRE2_ZERO_TERMINATED, opts,
+                                   PCRE2_ZERO_TERMINATED, opt_compile,
                                    &errornumber, &erroroffset, NULL);
     if (re == NULL) {
       PCRE2_UCHAR buf[256];

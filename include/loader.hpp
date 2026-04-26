@@ -4,6 +4,7 @@
 #include <string>
 #include <tree_sitter/api.h>
 #include <lib.hpp>
+#include <ListOfParsers.hpp>
 
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
@@ -117,7 +118,8 @@ TSLang::~TSLang() {
 }
 
 Loader::Loader(){
-  FileReader reader(LIST_OF_PARSER_PATH);
+  //FileReader reader(LIST_OF_PARSER_PATH);
+  FileReader reader({.cont = listOfParsers});
   std::string pattern = 
       R"(\|\s*([a-zA-Z]+)\s*\|\s*\[[a-zA-Z\.\/-]+\]\((https:\/\/[a-zA-Z0-9\:\/\.\-]+)\)\s*\|)";
   DEBUG("loader init");
@@ -164,7 +166,7 @@ TSLang Loader::get(std::string lang){
   DEBUG("Loader get - " << lang);
   TSLang tsLang;
   DirWalker walker(repoPath);
-  // TODO: different ext for mac, also maybe do introspection incase of static linking 
+  // TODO: do introspection incase of static linking 
   std::set<std::string> libExt = {".so", ".dll", ".dylib"};
   walker.matchExt = libExt;
   walker.recursive = true;
