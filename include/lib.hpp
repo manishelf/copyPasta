@@ -76,7 +76,6 @@ struct FileSnapshot {
 };
 
 class FileReader {
-  std::ifstream iFileStream;
   File file;
   void readFileMetadata();
   bool _isValid = false;
@@ -85,9 +84,7 @@ class FileReader {
   static const char *tsRead(void *payload, uint32_t byte_index, TSPoint point,
                             uint32_t *bytes_read);
 
-  std::vector<char> _buf;
-
-  char *buf = nullptr;
+  std::vector<char> buf;
 
   bool rowOffsetsValid = false;
   std::vector<size_t> rowOffsets;
@@ -96,12 +93,12 @@ public:
   size_t level = 0;
 
 
-  size_t bufStart;
-  size_t bufSize;
+  size_t bufStart = 0;
+  size_t bufSize = 0;
   static constexpr size_t defaultBlockSize = 1024 * 1024;
   size_t blockSize = defaultBlockSize;
   bool readReverse;
-  bool snapShotMode; // disables fresh load and sync
+  bool snapshotMode = false; // disables fresh load and sync
 
   FileReader(File file, size_t blockSize = defaultBlockSize);
   FileReader(std::string filePath, size_t blockSize = defaultBlockSize);
@@ -150,7 +147,7 @@ public:
                                                                               // options allowed 
   TSPoint getP(size_t byteOffset);
 
-  const FileSnapshot snapshot();
+  FileSnapshot snapshot();
 
   class iterator {
   public:
@@ -204,6 +201,17 @@ public:
     return std::reverse_iterator<iterator>(begin());
   }
 };
+
+#define STORE_ITER_INFO               \ 
+  size_t currPos = pos;               \
+  bool currReadReverse = readReverse; \
+  readReverse = false;                \
+  pos = 0                             
+
+#define RESTORE_ITER_INFO             \ 
+  pos = currPos;                      \
+  readReverse = currReadReverse       \ 
+
 
 TSPoint _getP(size_t byteOffset, const std::vector<size_t>& rowOffsets);
 TSRange _makeRange(size_t start, size_t end, const std::vector<size_t>& rowOffsets);
@@ -773,95 +781,66 @@ const std::vector<size_t>& FileReader::getRowOffsets(){
   return rowOffsets;
 }
 
-FileReader::FileReader(File file, size_t blockSize)
-    : iFileStream(file.path, std::ios::binary | std::ios::ate) {
+FileReader::FileReader(File file, size_t blockSize){
   DEBUG_FULL("FileReader ctor");
   this->file = file;
-  this->blockSize = blockSize;
-  _isValid = !file.isDir;
-  readFileMetadata();
-  snapShotMode = false;
+  if(file.isValid){
+    this->blockSize = blockSize;
+    _isValid = !file.isDir;
+    readFileMetadata();
+  }
 };
 
-FileReader::FileReader(std::string filePath, size_t blockSize)
-    : iFileStream(filePath.c_str(), std::ios::binary | std::ios::ate) {
+FileReader::FileReader(std::string filePath, size_t blockSize){
   DEBUG_FULL("FileReader ctor");
-  this->file = File(filePath);
+  file = File(filePath);
   if (file.isValid) {
-    _isValid = true && !file.isDir;
+    _isValid = !file.isDir;
     this->blockSize = blockSize;
     readFileMetadata();
-  } else {
-    _isValid = false;
   }
-  snapShotMode = false;
 };
 
 FileReader::FileReader(const FileSnapshot snap, size_t blockSize) {
   DEBUG_FULL("FileReader ctor with snap");
-  snapShotMode = true;
-  buf = new char[snap.cont.length()];
+  snapshotMode = true;
+  buf.reserve(snap.cont.length());
+  std::copy(snap.cont.begin(), snap.cont.end(), buf.begin());
   bufStart = 0;
   bufSize = snap.cont.length();
   file = snap.file;
   this->blockSize = blockSize;
-  std::memcpy(buf, snap.cont.data(), snap.cont.length());
   _isValid = true;
   rowOffsetsValid = false;
-  UPDATE_ROW_OFFSETS(snap.cont, snap.cont.length());
 };
 
 FileReader::FileReader(const FileReader &copy) {
   DEBUG_FULL("FileReader copy");
-  this->iFileStream = std::ifstream(copy.file.pathStr);
-  this->file = copy.file;
-  this->_isValid = copy._isValid;
-  this->pos = copy.pos;
-  this->buf = new char[copy.bufSize];
-  this->blockSize = copy.blockSize;
-  memcpy(this->buf, copy.buf, copy.bufSize);
-  this->level = copy.level;
-  this->rowOffsets = copy.rowOffsets;
-  this->bufStart = copy.bufStart;
-  this->bufSize = copy.bufSize;
-  this->readReverse = copy.readReverse;
-  this->snapShotMode = copy.snapShotMode;
+  file = copy.file;
+  _isValid = copy._isValid;
+  pos = copy.pos;
+  buf = copy.buf; 
+  blockSize = copy.blockSize;
+  level = copy.level;
+  rowOffsets = copy.rowOffsets;
+  bufStart = copy.bufStart;
+  bufSize = copy.bufSize;
+  readReverse = copy.readReverse;
+  snapshotMode = copy.snapshotMode;
 }
 
 void FileReader::readFileMetadata() {
-  if (iFileStream.is_open() && file.isValid && file.size != 0) {
+  if (file.isValid && file.size != 0) {
 
     DEBUG_FULL("FileReader readFileMetadata");
 
-    bufSize = file.size;
     bufStart = 0;
-
-    iFileStream.clear();
-    iFileStream.seekg(0, std::ios::beg);
-
     rowOffsets.reserve(file.size / 50);
+
     size_t blockSize = std::min(this->blockSize, file.size);
-    DEBUG_FULL("FileReader readFileMetadata block size - " << blockSize);
+    DEBUG_FULL("FileReader readFileMetadata block size - " << blockSize); 
 
-    buf = new char[blockSize];
-    size_t currentOffset = 0;
-
-    while (iFileStream) {
-      iFileStream.read(buf, blockSize);
-      std::streamsize bytesRead = iFileStream.gcount();
-
-      if (bytesRead <= 0)
-        break;
-
-      rowOffsetsValid = false;
-      bufStart = currentOffset;
-      bufSize = blockSize;
-      currentOffset += bytesRead;
-    }
-
-    iFileStream.read(buf, file.size);
-    iFileStream.clear();
-
+    load(0, blockSize);
   } else {
     ERROR("FileReader readFileMetadata failed");
     bufSize = 0;
@@ -874,29 +853,17 @@ FileReader::block FileReader::sync() {
   if (!_isValid)
     return {nullptr, 0};
 
-  if (snapShotMode)
-    return {buf, bufSize};
+  if (snapshotMode)
+    return {buf.data(), bufSize};
 
   DEBUG("FileReader sync");
 
   file.sync();
 
-  if (buf) {
-    delete[] buf;
-    bufSize = 0;
-  }
-
-  iFileStream.clear();
-  iFileStream.seekg(0, std::ios::beg);
-  buf = new char[file.size];
+  buf.clear();
+  bufSize = 0;
   bufStart = 0;
-  bufSize = file.size;
-  iFileStream.read(buf, file.size);
-  iFileStream.clear();
-
-  UPDATE_ROW_OFFSETS(buf, file.size);
-
-  return {buf, file.size};
+  return load(0, file.size);
 };
 
 std::string_view FileReader::get() { return get(bufStart, bufSize); }
@@ -910,19 +877,16 @@ std::string_view FileReader::get(size_t from, size_t to) {
 
   DEBUG_FULL("FileReader get");
 
-  size_t length = to - from;
+  auto block = load(from, to);
+  if (block.cont == nullptr)
+    return {};
 
-  if (buf == nullptr || (from > 0 && from < bufStart) ||
-      (to < file.size && to > bufSize + bufStart))
-    if (load(from, to).cont == nullptr)
-      return {};
-
-  return std::string_view(&buf[from - bufStart], length);
+  return std::string_view(block.cont, block.size);
 };
 
 std::string_view FileReader::getLine(size_t row) {
   
-  DEBUG_FULL("FileReader get");
+  DEBUG_FULL("FileReader getLine " << row);
 
   UPDATE_ROW_OFFSETS(buf, bufSize);
   // this has caused OOM due to unbounded access over the array :)
@@ -952,35 +916,34 @@ FileReader::block FileReader::load(size_t from, size_t to) {
   if (!_isValid)
     return {nullptr, 0};
 
-  if (snapShotMode)
-    return {buf, bufSize};
+  size_t fileEnd = snapshotMode ? bufSize : file.size;
 
-  if (from > file.size || to > file.size || to == 0)
+  if (from > fileEnd || to > fileEnd || to == 0)
     return {nullptr, 0};
-
-  DEBUG("FileReader load");
-
-  // TODO: vector<char> would be better for this?
-  if (buf) {
-    delete[] buf;
-    bufSize = 0;
-  }
 
   size_t length = to - from;
-  buf = new char[length];
-  iFileStream.clear();
-  iFileStream.seekg(from, std::ios::beg);
-
-  if (!iFileStream.read(buf, length)) {
-    delete[] buf;
-    bufSize = 0;
-    return {nullptr, 0};
+  
+  if (from >= bufStart && to <= bufStart + bufSize) {
+    return {&buf.data()[from - bufStart], length};
   }
 
-  bufStart = from;
-  bufSize = length;
+  DEBUG("FileReader load from - " << from  << " to - " << to);
 
-  return {buf, length};
+  buf.resize(to);
+
+  std::ifstream iFileStream(file.path.c_str(), std::ios::binary | std::ios::ate); 
+
+  iFileStream.seekg(bufSize, std::ios::beg);
+  iFileStream.read(buf.data(), to - bufSize);
+  size_t bytesRead = iFileStream.gcount();
+
+  iFileStream.close();
+  bufSize = to;
+
+  if (bytesRead == 0)
+    return {nullptr, 0};
+
+  return {&buf.data()[from], length};
 };
 
 FileReader::block FileReader::readBlockAt(size_t pos) {
@@ -989,16 +952,11 @@ FileReader::block FileReader::readBlockAt(size_t pos) {
   if (pos >= file.size)
     return {nullptr, 0};
 
-  DEBUG_FULL("FileReader readBlockAt");
+  DEBUG_FULL("FileReader readBlockAt - " << pos);
 
   size_t size = std::min(FileReader::defaultBlockSize, file.size - pos);
 
-  if (!buf || pos < bufStart || pos + size > bufStart + bufSize) {
-    load(pos, pos + size);
-    bufStart = pos;
-  }
-
-  return {buf + (pos - bufStart), size};
+  return load(pos, pos + size);
 }
 
 TSInput FileReader::asTsInput() {
@@ -1025,7 +983,7 @@ const char *FileReader::tsRead(void *payload, uint32_t byte_index,
       std::min(reader->blockSize, reader->file.size - byte_index);
 
   // Ensure buffer covers requested range
-  if (!reader->buf || byte_index < reader->bufStart ||
+  if (reader->buf.empty() || byte_index < reader->bufStart ||
       byte_index + blockSize > reader->bufStart + reader->bufSize) {
 
     reader->load(byte_index, byte_index + blockSize);
@@ -1033,7 +991,7 @@ const char *FileReader::tsRead(void *payload, uint32_t byte_index,
   }
 
   *bytes_read = static_cast<uint32_t>(blockSize);
-  return reader->buf + (byte_index - reader->bufStart);
+  return &reader->buf.data()[byte_index - reader->bufStart];
 }
 
 TSPoint _getP(size_t byteOffset, const std::vector<size_t>& rowOffsets) {
@@ -1080,41 +1038,35 @@ std::vector<FileReader::MatchResult> FileReader::find(std::string pattern,
                                                       bool regex, uint32_t opt) {
 
   
-  // TODO: this must use next to get next block for file and not sync from outside
   std::vector<MatchResult> matches;
   
     
   DEBUG("FileReader find called with - " + pattern);
   if (regex) {
-
-    if (buf == nullptr)
-      if (sync().cont == nullptr)
-        return matches;
     pcre2_code *re = PcreCache::global().get(pattern, opt);
 
     return findWith(re);
   } else {
+    STORE_ITER_INFO;
+    for(auto block = next(); block.cont && block.size != 0; block = next()){
+      std::string_view searchSpace(block.cont, block.size);
 
-    if (buf == nullptr)
-      if (sync().cont == nullptr)
-        return matches;
+      size_t foundPos = 0;
+      size_t offset = 0;
+      while ((foundPos = searchSpace.find(pattern, offset)) !=
+          std::string_view::npos) {
 
-    std::string_view searchSpace(buf, bufSize);
+        size_t matchStart = foundPos;
+        size_t matchEnd = matchStart + pattern.size();
 
-    size_t foundPos = 0;
-    size_t offset = 0;
-    while ((foundPos = searchSpace.find(pattern, offset)) !=
-           std::string_view::npos) {
+        MatchResult match;
+        match.match = _makeRange(matchStart, matchEnd, rowOffsets);
+        matches.push_back(match);
 
-      size_t matchStart = foundPos;
-      size_t matchEnd = matchStart + pattern.size();
-
-      MatchResult match;
-      match.match = _makeRange(matchStart, matchEnd, rowOffsets);
-      matches.push_back(match);
-
-      offset = matchEnd;
+        offset = matchEnd;
+      }
     }
+    RESTORE_ITER_INFO;
     DEBUG("FileReader find done for - " + pattern);
     return matches;
   }
@@ -1126,69 +1078,10 @@ std::vector<FileReader::MatchResult> FileReader::findIn(const std::string &text,
                                                         uint32_t opt_compile) {
 
   DEBUG("FileReader findIn  for - " << pattern << " over size - " << text.length() );
+  FileReader fr({text});
 
-  // Build a temporary rowOffsets for the provided text so getP works
-  // are correct relative to the text's own coordinates.
-  std::vector<size_t> rowOffsets;
-  bool rowOffsetsValid = false;
-  UPDATE_ROW_OFFSETS(text, text.length());
-
-  std::vector<MatchResult> matches;
-
-  if (regex) {
-    pcre2_code *re = PcreCache::global().get(pattern, opt_compile);
-
-    PCRE2_SPTR subject      = (PCRE2_SPTR)text.data();
-    PCRE2_SIZE subject_len  = text.size();
-    pcre2_match_data *md    = pcre2_match_data_create_from_pattern(re, NULL);
-    PCRE2_SIZE startOffset  = 0;
-
-    while (true) {
-      
-      int rc = pcre2_match(re, subject, subject_len, startOffset,
-                           PCRE2_NO_UTF_CHECK, md, NULL); // this will match first instance from offset
-
-      if (rc == PCRE2_ERROR_NOMATCH) break;
-      if (rc < 0) {
-        pcre2_match_data_free(md);
-        throw std::runtime_error("PCRE2 match error in findIn");
-      }
-
-      PCRE2_SIZE *ov = pcre2_get_ovector_pointer(md);
-      MatchResult m;
-      m.match = _makeRange(ov[0], ov[1], rowOffsets);
-
-      for (int i = 1; i < rc; ++i) {
-        if (ov[2*i] == PCRE2_UNSET) continue;
-        m.captures.push_back(_makeRange(ov[2*i], ov[2*i+1], rowOffsets));
-      }
-
-      startOffset = ov[1];
-      if (ov[0] == ov[1]) {
-        if (startOffset < subject_len) ++startOffset; else break;
-      }
-
-      if (startOffset >= subject_len) { 
-        matches.push_back(m); break; 
-      }
-
-      matches.push_back(m);
-    }
-
-    pcre2_match_data_free(md);
-
-  } else {
-    size_t offset = 0;
-    while (true) {
-      size_t pos = text.find(pattern, offset);
-      if (pos == std::string::npos) break;
-      MatchResult m;
-      m.match = _makeRange(pos, pos + pattern.size(), rowOffsets);
-      matches.push_back(m);
-      offset = pos + pattern.size();
-    }
-  }
-
+  auto matches = fr.find(pattern, regex, opt_compile);
+  
   DEBUG("FileReader findIn done  for - " << pattern << " over size - " << text.length() );
   return matches;
 };
@@ -1198,112 +1091,127 @@ std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
 
   DEBUG("FileReader findWith");
   std::vector<MatchResult> matches;
+  STORE_ITER_INFO; 
+  for(auto block = next(); block.cont && block.size != 0; block = next()){
 
-  if (buf == nullptr)
-    if (sync().cont == nullptr || bufSize == 0)
-      return matches;
+    PCRE2_SPTR subject = (PCRE2_SPTR)block.cont;
+    PCRE2_SIZE subject_length = block.size;
+    PCRE2_SIZE *ovector;
 
-  PCRE2_SPTR subject = (PCRE2_SPTR)buf;
-  PCRE2_SIZE subject_length = bufSize;
-  PCRE2_SIZE *ovector;
+    pcre2_match_data *match_data;
+    match_data = pcre2_match_data_create_from_pattern(re, NULL);
 
-  pcre2_match_data *match_data;
-  match_data = pcre2_match_data_create_from_pattern(re, NULL);
+    int rc = 0;
+    PCRE2_SIZE startOffset = 0;
+    while (true) {
+      rc = pcre2_match(re, subject, subject_length, startOffset, opt, match_data,
+          NULL);
 
-  int rc = 0;
-  PCRE2_SIZE startOffset = 0;
-  while (true) {
-    rc = pcre2_match(re, subject, subject_length, startOffset, opt, match_data,
-                     NULL);
-
-    if (rc == PCRE2_ERROR_NOMATCH)
-      break;
-
-    if (rc < 0) {
-      PCRE2_UCHAR buffer[256];
-      int len = pcre2_get_error_message(rc, buffer, sizeof(buffer));
-
-      if (len > 0) {
-        std::cerr << "PCRE2 error: " << buffer << "\n";
-      } else {
-        std::cerr << "Unknown PCRE2 error: " << rc << "\n";
-      }
-      pcre2_match_data_free(match_data);
-      throw std::runtime_error("PCRE2 match error");
-    }
-    ovector = pcre2_get_ovector_pointer(match_data);
-
-    MatchResult match;
-    TSRange range;
-
-    range.start_byte = static_cast<uint32_t>(ovector[0]);
-    range.end_byte = static_cast<uint32_t>(ovector[1]);
-
-    range.start_point = getP(range.start_byte);
-    range.end_point = getP(range.end_byte);
-
-    match.match = range;
-
-    for (int i = 1; i < rc; i++) {
-      PCRE2_SIZE start = ovector[2 * i];
-      PCRE2_SIZE end = ovector[2 * i + 1];
-
-      if (start == PCRE2_UNSET || end == PCRE2_UNSET)
-        continue;
-
-      TSRange capture = _makeRange(start, end, rowOffsets);
-      match.captures.push_back(capture);
-    }
-
-    startOffset = ovector[1];
-    if (ovector[0] == ovector[1]) { // 0 length matches can exist
-      if (startOffset < subject_length)
-        startOffset++;
-      else
+      if (rc == PCRE2_ERROR_NOMATCH)
         break;
-    }
 
-    if (startOffset >= subject_length)
-      break;
+      if (rc < 0) {
+        PCRE2_UCHAR buffer[256];
+        int len = pcre2_get_error_message(rc, buffer, sizeof(buffer));
 
-    matches.push_back(match);
-  };
+        if (len > 0) {
+          std::cerr << "PCRE2 error: " << buffer << "\n";
+        } else {
+          std::cerr << "Unknown PCRE2 error: " << rc << "\n";
+        }
+        pcre2_match_data_free(match_data);
+        throw std::runtime_error("PCRE2 match error");
+      }
+      ovector = pcre2_get_ovector_pointer(match_data);
 
-  pcre2_match_data_free(match_data);
+      MatchResult match;
+      TSRange range;
+
+      range.start_byte = static_cast<uint32_t>(ovector[0]);
+      range.end_byte = static_cast<uint32_t>(ovector[1]);
+
+      range.start_point = getP(range.start_byte);
+      range.end_point = getP(range.end_byte);
+
+      match.match = range;
+
+      for (int i = 1; i < rc; i++) {
+        PCRE2_SIZE start = ovector[2 * i];
+        PCRE2_SIZE end = ovector[2 * i + 1];
+
+        if (start == PCRE2_UNSET || end == PCRE2_UNSET)
+          continue;
+
+        TSRange capture = _makeRange(start, end, rowOffsets);
+        match.captures.push_back(capture);
+      }
+
+      startOffset = ovector[1];
+      if (ovector[0] == ovector[1]) { // 0 length matches can exist
+        if (startOffset < subject_length)
+          startOffset++;
+        else
+          break;
+      }
+
+      if (startOffset >= subject_length)
+        break;
+
+      matches.push_back(match);
+    };
+
+    pcre2_match_data_free(match_data);
+  }
+  RESTORE_ITER_INFO;
 
   DEBUG("FileReader findWith done");
   return matches;
 };
 
-const FileSnapshot FileReader::snapshot() {
+FileSnapshot FileReader::snapshot() {
 
   DEBUG("FileReader snapshot");
   FileSnapshot snap = {};
 
-  snap.cont = std::string(buf, bufSize);
   snap.dirty = false;
-
+  snap.file = file;
   if (file.isValid) {
-    snap.file = file;
-    file.sync(); // TODO: is this needed?
-    sync(); // TODO: this basically throws away entire buf , maybe just check if it is stale?
-    fs::file_time_type mtim = file.dir_entry.last_write_time();
-    snap.lastModified = mtim.time_since_epoch().count();
+    snap.file.sync(); 
+    fs::file_time_type mtimCurr = snap.file.dir_entry.last_write_time();
+    snap.lastModified = mtimCurr.time_since_epoch().count();
+
+    fs::file_time_type mtimOld = file.dir_entry.last_write_time();
+    size_t selfLastModified = mtimOld.time_since_epoch().count();
+
+    if(selfLastModified < snap.lastModified){
+      sync();
+    }
   }
 
+  STORE_ITER_INFO;
+  while(next().cont != nullptr){
+    // load all remaining blocks
+    DEBUG_FULL("FileReader snapshot Loaded block");
+  }
+  RESTORE_ITER_INFO;
+
+  snap.cont = std::string(buf.data(), bufSize);
   return snap;
 }
 
 FileReader::block FileReader::next() {
-  if (!buf || pos >= file.size || file.size == 0) {
+  size_t fileEnd = snapshotMode ? bufSize : file.size;
+
+  if (pos >= fileEnd || fileEnd == 0) {
     return {nullptr, 0};
   }
 
   DEBUG_FULL("FileReader next - " << file.pathStr);
 
   size_t currentBlockSize = 0;
-  if (file.size - pos < defaultBlockSize) {
-    currentBlockSize = file.size - pos;
+
+  if (fileEnd - pos < defaultBlockSize) {
+    currentBlockSize = fileEnd - pos;
   } else {
     currentBlockSize = defaultBlockSize;
   }
@@ -1313,7 +1221,7 @@ FileReader::block FileReader::next() {
     bufStart = pos;
   }
 
-  char *currPtr = buf + (pos - bufSize);
+  char *currPtr = &buf.data()[pos - bufSize];
 
   if (readReverse) {
     pos = (pos >= currentBlockSize) ? pos - currentBlockSize : 0;
@@ -1325,7 +1233,9 @@ FileReader::block FileReader::next() {
 };
 
 FileReader::block FileReader::prev() {
-  if (!buf || pos <= 0 || file.size == 0) {
+  size_t fileEnd = snapshotMode ? bufSize : file.size;
+
+  if (pos <= 0 || fileEnd == 0) {
     return {nullptr, 0};
   }
 
@@ -1338,10 +1248,10 @@ FileReader::block FileReader::prev() {
     bufStart = pos;
   }
 
-  char *currPtr = buf + (pos - bufSize);
+  char *currPtr = &buf.data()[pos - bufSize];
 
   if (readReverse) {
-    if (pos < file.size - 1) {
+    if (pos < fileEnd - 1) {
       pos += currentBlockSize;
     }
   } else if (pos > 0) {
@@ -1352,14 +1262,7 @@ FileReader::block FileReader::prev() {
 };
 
 void FileReader::reset() {
-
   DEBUG("FileReader reset");
-
-  if (buf) {
-    delete[] buf;
-    buf = nullptr;
-  }
-  bufSize = 0;
   bufStart = 0;
   if (readReverse) {
     pos = file.size;
@@ -1370,12 +1273,6 @@ void FileReader::reset() {
 
 FileReader::~FileReader() {
   DEBUG_FULL("FileReader destroyed");
-  if (iFileStream.is_open()) {
-    iFileStream.close();
-  }
-  if (buf)
-    delete[] buf;
-  buf = nullptr;
 };
 
 // FileWriter
@@ -1397,9 +1294,6 @@ FileWriter::FileWriter(const FileSnapshot snap) {
 FileWriter::FileWriter(std::string path) {
   DEBUG_FULL("FileWriter ctor with path");
   FileReader tmp(path);
-  if(tmp.bufSize != tmp.getFile().size){
-    tmp.sync();
-  }
   snap = tmp.snapshot();
   file = tmp.getFile();
   rowOffsets = tmp.getRowOffsets();
@@ -2138,8 +2032,6 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
     return FAILED;
 
   DEBUG_FULL("DirWalker walk begin - " << path);
-  // TODO: this should be cached at walker level so that next walk call does not load same entries again
-  // until the path is changed
   std::vector<fs::directory_entry> entries(
       fs::directory_iterator(this->path), // begin it
       fs::directory_iterator()            // end it
@@ -2627,7 +2519,6 @@ const CSTTree TSEngine::parse(FileReader &reader) {
   DEBUG("TSEngine parse begin");
   TSTree *tree = ts_parser_parse(parser, NULL, reader.asTsInput());
   DEBUG("TSEngine parse end");
-  // TODO: this assumes reader == full file
   return CSTTree(tree, reader.get(reader.bufStart, reader.bufSize), *this);
 }
 
