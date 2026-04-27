@@ -521,9 +521,10 @@ public:
 
   static TSRange getRange(TSNode n);
 
-  // Returns a cached TSQuery*.  The pointer is valid for the lifetime of this
-  // TSEngine.  Callers must NOT call ts_query_delete on the returned pointer.
   TSQuery *queryNew(std::string &queryExpr);
+
+  std::map<std::string , std::string> getAvailableTypes();
+
 };
 
 struct ReaderWriterEngineTree {
@@ -2253,9 +2254,23 @@ pcre2_code * PcreCache::get(const std::string &pattern, uint32_t opt_compile) {
     if (re == NULL) {
       PCRE2_UCHAR buf[256];
       pcre2_get_error_message(errornumber, buf, sizeof(buf));
-      throw std::invalid_argument(
-          std::string("PcreCache: compile failed for '") + pattern +
-          "': " + reinterpret_cast<char *>(buf));
+      std::string msg = "PcreCache: regex compile failed for pattern: '" + pattern + "'\n";
+      msg += "  Error: " 
+            + std::string(reinterpret_cast<char*>(buf)) 
+            + " (code " + std::to_string(errornumber) + ")\n"
+            + "  At offset: " + std::to_string(erroroffset) + "\n";
+
+      size_t ctx = 10;
+      size_t start = (erroroffset > ctx) ? erroroffset - ctx : 0;
+      size_t end = std::min(pattern.size(), static_cast<size_t>(erroroffset + ctx));
+      msg += "  Context: ..." + pattern.substr(start, erroroffset - start) + ">>><<<";
+      
+      if (erroroffset < pattern.size()){
+        msg += pattern.substr(erroroffset, end - erroroffset);
+      }
+
+      msg += "...\n";
+      throw std::invalid_argument(msg);
     }
     pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
     DEBUG_FULL("PcreCache compile pattern done - " << pattern);
@@ -2555,16 +2570,60 @@ TSQuery *TSEngine::queryNew(std::string &queryExpr) {
   TSQuery *query = ts_query_new(lang, queryExpr.c_str(), queryExpr.length(),
                                 &errorOffset, &error);
 
-  // TODO: assertions are stripped in release, if should be used here
-  assert(error != TSQueryErrorSyntax);
-  assert(error != TSQueryErrorNodeType);
-  assert(error != TSQueryErrorField);
-  assert(error != TSQueryErrorCapture);
-  assert(error == TSQueryErrorNone);
-
-
+  if (error != TSQueryErrorNone) {
+    const char* errType = "Unknown";
+    switch (error) {
+      case TSQueryErrorSyntax: errType = "Syntax"; break;
+      case TSQueryErrorNodeType: errType = "NodeType"; break;
+      case TSQueryErrorField: errType = "Field"; break;
+      case TSQueryErrorCapture: errType = "Capture"; break;
+      case TSQueryErrorStructure: errType = "Structure"; break;
+      default: break;
+    }
+    std::string msg = "TSEngine::queryNew error: type=";
+    msg += errType;
+    msg += ", offset=" + std::to_string(errorOffset) + ", expr='" + queryExpr + "'";
+    throw std::runtime_error(msg);
+  }
+  
   return query;
 };
+
+std::map<std::string, std::string> TSEngine::getAvailableTypes() {
+    std::map<std::string, std::string> result;
+
+    uint32_t symbol_count = ts_language_symbol_count(lang);
+
+    for (uint32_t i = 0; i < symbol_count; ++i) {
+        const char* name = ts_language_symbol_name(lang, i);
+        TSSymbolType type = ts_language_symbol_type(lang, i);
+
+        if (!name) continue;
+
+        std::string typeStr;
+        switch (type) {
+            case TSSymbolTypeRegular:
+                typeStr = "regular";
+                break;
+            case TSSymbolTypeAnonymous:
+                typeStr = "anonymous";
+                break;
+            case TSSymbolTypeAuxiliary:
+                typeStr = "auxiliary";
+                break;
+            case TSSymbolTypeSupertype:
+                typeStr = "supertype";
+                break;
+            default :
+                typeStr = "unknown";
+                break;
+        }
+
+        result[name] = typeStr;
+    }
+
+    return result;
+}
 
 TSRange TSEngine::getRange(TSNode n){
   TSRange r = {
