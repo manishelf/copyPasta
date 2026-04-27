@@ -46,9 +46,11 @@ static void *load_symbol(LIB_HANDLE lib, const char *symbol) {
 
 static LIB_HANDLE load_library(const char *path) {
 #ifdef _WIN32
-    return LoadLibraryA(path);
+    if(!path) GetModuleHandle(NULL); // loaded lib
+    return LoadLibraryA(path); // external lib
 #else
-    return dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if(!path) dlopen(NULL, RTLD_NOW | RTLD_LOCAL); // loaded lib
+    return dlopen(path, RTLD_NOW | RTLD_LOCAL); // external lib
 #endif
 }
 
@@ -91,10 +93,11 @@ class TSLang{
 
 class Loader{
   std::map<std::string, std::string> lookup;
+  static TSLang loadTSLangFromSelf(std::string lang);
+  static TSLang loadTSLangFromExtern(std::string libPath, std::string lang);
   public:
   Loader();
   TSLang get(std::string lang);
-  static TSLang loadTSLang(std::string libPath, std::string lang);
 };
 
 #endif // LOADER_
@@ -136,16 +139,34 @@ Loader::Loader(){
   DEBUG("loader init done");
 }
 
-TSLang Loader::loadTSLang(std::string libPath, std::string lang)
-{
-    LIB_HANDLE handle;
+TSLang Loader::loadTSLangFromSelf(std::string lang){
+    std::string symbol = "tree_sitter_" + lang;
+    
+    //already Loaded or statically included
+    LIB_HANDLE handle =  load_library(NULL); 
+    TSLanguageFn fn = nullptr;
 
-    handle = load_library(libPath.c_str());
+    if(handle){
+      fn = (TSLanguageFn)load_symbol(handle, symbol.c_str());
+    }
+
+    if(fn){
+      const TSLanguage* tsLang = fn();
+      return TSLang(nullptr, tsLang, lang);
+    }
+
+    return TSLang(nullptr, nullptr, lang);
+}
+
+TSLang Loader::loadTSLangFromExtern(std::string libPath, std::string lang)
+{
+    std::string symbol = "tree_sitter_" + lang;
+
+    // load external lib  
+    LIB_HANDLE handle = load_library(libPath.c_str());
     if (!handle) {
       throw std::runtime_error("unable to load library at "+ libPath);
     }
-
-    std::string symbol = "tree_sitter_" + lang;
 
     TSLanguageFn fn = (TSLanguageFn)load_symbol(handle, symbol.c_str());
     if (!fn) {
@@ -164,7 +185,12 @@ TSLang Loader::get(std::string lang){
   std::string repoPath = std::string(PARSER_PATH)+"/tree-sitter-"+lang;
 
   DEBUG("Loader get - " << lang);
-  TSLang tsLang;
+  TSLang tsLang  = loadTSLangFromSelf(lang);
+
+  if(tsLang.lang){
+    return tsLang;
+  }
+
   DirWalker walker(repoPath);
   // TODO: do introspection incase of static linking 
   std::set<std::string> libExt = {".so", ".dll", ".dylib"};
@@ -188,7 +214,7 @@ TSLang Loader::get(std::string lang){
       }
 
       INFO("Found library - " << file.pathStr);
-      tsLang = loadTSLang(file.pathStr, lang);
+      tsLang = loadTSLangFromExtern(file.pathStr, lang);
 
       return DirWalker::STOP;
   }; 
