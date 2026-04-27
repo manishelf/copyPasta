@@ -1,3 +1,6 @@
+#include "git2/deprecated.h"
+#include "git2/diff.h"
+#include "git2/patch.h"
 #include "git2/signature.h"
 #include "git2/types.h"
 #include <algorithm>
@@ -306,9 +309,40 @@ public:
 
   bool branchExists(std::string name);
 
+  struct LineDiff {
+    git_diff_line_t type = GIT_DIFF_LINE_ADDITION;
+    int oldLineNo = 0; // -1 if not in old file i.e add
+    int newLineNo = 0; // -1 if not in new file i.e del
+    size_t fileOffset = 0; // offset in the original file to the content
+    std::string cont;
+    std::string blameAuthor;
+    std::string blameCommit;
+  };
+
+  struct Hunk{
+    int oldStartLine; 
+    int oldLinesCount; 
+    int newStartLine; 
+    int newLinesCount; 
+
+    // eg @@ -20,1 +20, 3 @@  at start of a hunk 
+    std::string header; 
+
+    std::vector<LineDiff> lineDiffs;
+  };
+
+  struct FileDiff {
+    std::vector<Hunk> hunks;
+    std::string oldPath;
+    std::string newPath;
+    git_delta_t status;
+    git_diff_flag_t flags;
+  };
+
   // TODO:
-  std::vector<git_diff> diff();
-  std::vector<git_diff> diff(std::string blobId);
+  std::vector<FileDiff> diff();
+  std::vector<LibGit::FileDiff> diff(std::string fromBlobId, std::string toBlobId,
+                                    git_diff_option_t opt = GIT_DIFF_NORMAL); 
 };
 
 
@@ -523,7 +557,7 @@ public:
 
   TSQuery *queryNew(std::string &queryExpr);
 
-  std::map<std::string , std::string> getAvailableTypes();
+  std::map<std::string , std::string> getAvailableNodeTypes();
 
 };
 
@@ -2589,7 +2623,7 @@ TSQuery *TSEngine::queryNew(std::string &queryExpr) {
   return query;
 };
 
-std::map<std::string, std::string> TSEngine::getAvailableTypes() {
+std::map<std::string, std::string> TSEngine::getAvailableNodeTypes() {
     std::map<std::string, std::string> result;
 
     uint32_t symbol_count = ts_language_symbol_count(lang);
@@ -2783,14 +2817,14 @@ void LibGit::checkout(std::string blobId){
     //It's a branch/tag
 
     const char* refname = git_reference_name(ref);
-    DEBUG("LibGit branch/tag ref - " << refname);
+    DEBUG("LibGit checkout branch/tag ref - " << refname);
     err = git_repository_set_head(repo.get(), refname);
     err = git_checkout_head(repo.get(), &opts);
     git_reference_free(ref);
   } else {
     //It's a commit/tree
     
-    DEBUG("LibGit commit/tree target - " << blobId);
+    DEBUG("LibGit checkout commit/tree target - " << blobId);
     err = git_revparse_single(&target, repo.get(), blobId.c_str()); 
     err = git_checkout_tree(repo.get(), target, &opts);
     err = git_repository_set_head_detached(repo.get(), git_object_id(target)); 
@@ -2893,12 +2927,140 @@ void LibGit::resetHead(git_reset_t opt){
     }
 }
 
-std::vector<git_diff> LibGit::diff(){
-
+std::vector<LibGit::FileDiff> LibGit::diff(){
+  return diff("HEAD", "workdir");
 }
 
-std::vector<git_diff> LibGit::diff(std::string blobId){
+std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string toBlobId,
+                                           git_diff_option_t opt) {
 
+  std::vector<FileDiff> result;
+
+  git_object *from_obj = nullptr;
+  git_object *to_obj = nullptr;
+  git_tree *from_tree = nullptr;
+  git_tree *to_tree = nullptr;
+  git_diff *diff = nullptr;
+
+  git_diff_options opts;
+  git_diff_init_options(&opts, GIT_DIFF_OPTIONS_VERSION);
+  opts.flags = opt;
+	//opts.pathspec = {NULL, 0}; // for having custom filtering on path
+	//opts.context_lines = 3;
+	//opts.interhunk_lines = 0;
+	//opts.max_size = 512 * 1024;
+	//opts.old_prefix = "old";
+	//opts.new_prefix = "new";
+
+  int err = 0;
+
+  // Resolve FROM (can be any git object)
+  err = git_revparse_single(&from_obj, repo.get(), fromBlobId.c_str());
+  err = git_object_peel((git_object**)&from_tree, from_obj, GIT_OBJECT_TREE);
+
+
+  // Resolve TO (can be any git object)
+  if (toBlobId != "workdir") {
+    err = git_revparse_single(&to_obj, repo.get(), toBlobId.c_str());
+    err = git_object_peel((git_object**)&to_tree, to_obj, GIT_OBJECT_TREE);
+  }
+
+  // Create diff
+  if (toBlobId == "workdir") {
+    err = git_diff_tree_to_workdir_with_index(
+        &diff,
+        repo.get(),
+        from_tree,
+        &opts
+        );
+  } else {
+    err = git_diff_tree_to_tree(
+        &diff,
+        repo.get(),
+        from_tree,
+        to_tree,
+        &opts
+        );
+  }
+
+  /*
+  git_diff
+  └── git_diff_delta (file metadata)
+        └── git_patch (optional, content diff)
+              └── hunks
+                    └── lines
+  */
+
+  // Iterate diff
+  size_t num_deltas = git_diff_num_deltas(diff); // delta = one file change
+  
+  for (size_t i = 0; i < num_deltas; ++i) {
+    const git_diff_delta *delta = git_diff_get_delta(diff, i);
+    FileDiff f;
+    
+    f.status = delta->status;
+    f.flags =  (git_diff_flag_t) delta->flags;
+                delta->nfiles; // number of files in this delta ?
+    f.oldPath = delta->old_file.path;
+    f.newPath = delta->new_file.path;
+
+    git_patch* patch = nullptr;
+    err = git_patch_from_diff(&patch, diff, i);
+
+    size_t hunkNum = git_patch_num_hunks(patch);
+    for(int j = 0; j < hunkNum; i++){
+      const git_diff_hunk* hunk;
+
+      size_t lineNum = 0;
+      err = git_patch_get_hunk(&hunk, &lineNum, patch , j);
+
+      Hunk h;
+      h.oldStartLine = hunk->old_start; 
+      h.oldLinesCount = hunk->old_lines; 
+      h.newStartLine = hunk->new_start; 
+      h.newLinesCount = hunk->new_lines; 
+      h.header = std::string(hunk->header); 
+
+      for(int k = 0; k < lineNum; k++){
+        const git_diff_line* line;
+        git_patch_get_line_in_hunk(&line, patch, j, k);
+        LineDiff l;
+        l.type = (git_diff_line_t) line->origin;
+        l.oldLineNo = line->old_lineno;
+        l.newLineNo = line->new_lineno;
+        l.fileOffset = line->content_offset;
+        l.cont = std::string(line->content, line->content_len);
+
+        //TODO
+        l.blameAuthor;
+        l.blameCommit;
+
+        h.lineDiffs.push_back(l);
+        // git_line_free(line); // line is ref counted
+      }
+      f.hunks.push_back(h);
+      //git_hunk_free(hunk); //hunk is ref counted
+    }
+
+    result.push_back(f);
+    git_patch_free(patch);
+  }
+  
+  git_diff_free(diff);
+  git_tree_free(from_tree);
+  git_tree_free(to_tree);
+  git_object_free(from_obj);
+  git_object_free(to_obj);
+
+  if (err < 0) {
+    const git_error* e = git_error_last();
+    throw std::runtime_error(
+        std::string("Diff failed: ") +
+        (e && e->message ? e->message : "Unknown")
+        );
+  }
+
+  return result;
 }
 
 
