@@ -535,9 +535,27 @@ void LuaExecutor::bind(){
 }
 
 void LuaExecutor::exec(std::string path){
-  if (luaL_dofile(L, path.c_str()) != LUA_OK) {
-    throw std::runtime_error("Error executing " + path + " : " + lua_tostring(L, -1));
+  lua_getglobal(L, "debug");
+  lua_getfield(L, -1, "traceback");
+
+  int errFuncIndex = lua_gettop(L);
+
+  // Load file
+  if (luaL_loadfile(L, path.c_str()) != LUA_OK) {
+    std::string err = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    throw std::runtime_error("Lua load error in " + path + ":\n" + err);
   }
+
+  // Call with traceback
+  if (lua_pcall(L, 0, LUA_MULTRET, errFuncIndex) != LUA_OK) {
+    std::string err = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    throw std::runtime_error("Lua runtime error in " + path + ":\n" + err);
+  }
+
+  // Clean up error handler
+  lua_remove(L, errFuncIndex);
 }
 
 #endif
