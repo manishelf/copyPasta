@@ -1,3 +1,4 @@
+#include "git2/checkout.h"
 #include "git2/deprecated.h"
 #include "git2/diff.h"
 #include "git2/patch.h"
@@ -285,11 +286,15 @@ class LibGit {
   static std::once_flag lib_git_init;
   static void init();
 
+  git_checkout_options checkout_opts = GIT_CHECKOUT_OPTIONS_INIT;
+  git_diff_options diff_opts = GIT_DIFF_OPTIONS_INIT;
+	
 public:
   LibGit(git_repository *repo);
   ~LibGit();
 
-  static LibGit clone(std::string url, std::string path = ".", bool shallow = false);
+  static LibGit clone(std::string url, std::string path = ".", 
+                      bool shallow = false, git_clone_options opts = GIT_CLONE_OPTIONS_INIT);
   static LibGit open(std::string path = ".");
  
   bool isPathIgnored(fs::path path);
@@ -300,8 +305,8 @@ public:
   void add(const fs::path &path);
   void addAll();
 
-  void checkout(std::string blobId);
-  void branchCreate(std::string name);
+  void checkout(std::string blobId, git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT);
+  void branchCreate(std::string name); 
   void setSignature(std::string username, std::string email);
   void commit(std::string message);
 
@@ -342,7 +347,7 @@ public:
   // TODO:
   std::vector<FileDiff> diff();
   std::vector<LibGit::FileDiff> diff(std::string fromBlobId, std::string toBlobId,
-                                    git_diff_option_t opt = GIT_DIFF_NORMAL); 
+                                     git_diff_options opts = GIT_DIFF_OPTIONS_INIT); 
 };
 
 
@@ -2702,28 +2707,17 @@ LibGit::RepoPtr LibGit::make_repo(git_repository *raw){
     });
 }
 
-LibGit LibGit::clone(std::string url, std::string path, bool shallow){
+LibGit LibGit::clone(std::string url, std::string path, bool shallow, git_clone_options opts){
   init();
   DEBUG("LibGit clone start");
   try{
     return open(path);
   }catch(std::runtime_error e){
     git_repository* repo = nullptr;
-    git_clone_options opts = GIT_CLONE_OPTIONS_INIT;
     
     if(shallow){
       opts.fetch_opts.depth = 1;
     }
-
-    auto cloneProgressCb = 
-    [](const git_indexer_progress *stats, void *payload) -> int {
-      INFO("Cloning progrss %d/%d objects\r" << 
-          stats->received_objects <<
-          stats->total_objects);
-      printf("\n");
-      return 0;
-    };
-    opts.fetch_opts.callbacks.transfer_progress = cloneProgressCb;
 
     if(git_clone(&repo, url.c_str(), path.c_str(), &opts) < 0){
       auto e = git_error_last();
@@ -2802,13 +2796,11 @@ void LibGit::addIgnoreRule(std::string rule){
   git_ignore_add_rule(repo.get(), rule.c_str());
 }
 
-void LibGit::checkout(std::string blobId){
+void LibGit::checkout(std::string blobId, git_checkout_options opts){
   DEBUG("LibGit checkout - " << blobId);
 
   std::lock_guard<std::mutex> lock(gitMutex);
   git_object *target = nullptr;
-  git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
-  opts.checkout_strategy = GIT_CHECKOUT_SAFE;
   git_reference *ref = nullptr;
 
   int err = 0;
@@ -2886,8 +2878,7 @@ void LibGit::commit(std::string message) {
 
   err = git_repository_index(&index, repo.get()); 
   err = git_index_read(index, 0);
-  /*
-   */
+
   git_oid tree_id;
   git_tree *tree = nullptr;
   git_reference *ref = nullptr;
@@ -2917,7 +2908,8 @@ void LibGit::resetHead(git_reset_t opt){
     err = git_revparse_single(&target, repo.get(), "HEAD");
 
     std::lock_guard<std::mutex> lock(gitMutex);
-    err = git_reset(repo.get(), target, opt, NULL);
+    git_checkout_options opts;
+    err = git_reset(repo.get(), target, opt, &opts);
     git_object_free(target);
     
     if(err < 0){
@@ -2932,8 +2924,8 @@ std::vector<LibGit::FileDiff> LibGit::diff(){
 }
 
 std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string toBlobId,
-                                           git_diff_option_t opt) {
-
+                                          git_diff_options opts) {
+  DEBUG("LibGit diff "  << fromBlobId << toBlobId);
   std::vector<FileDiff> result;
 
   git_object *from_obj = nullptr;
@@ -2942,22 +2934,11 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
   git_tree *to_tree = nullptr;
   git_diff *diff = nullptr;
 
-  git_diff_options opts;
-  git_diff_init_options(&opts, GIT_DIFF_OPTIONS_VERSION);
-  opts.flags = opt;
-	//opts.pathspec = {NULL, 0}; // for having custom filtering on path
-	//opts.context_lines = 3;
-	//opts.interhunk_lines = 0;
-	//opts.max_size = 512 * 1024;
-	//opts.old_prefix = "old";
-	//opts.new_prefix = "new";
-
   int err = 0;
 
   // Resolve FROM (can be any git object)
   err = git_revparse_single(&from_obj, repo.get(), fromBlobId.c_str());
   err = git_object_peel((git_object**)&from_tree, from_obj, GIT_OBJECT_TREE);
-
 
   // Resolve TO (can be any git object)
   if (toBlobId != "workdir") {
@@ -2965,7 +2946,7 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
     err = git_object_peel((git_object**)&to_tree, to_obj, GIT_OBJECT_TREE);
   }
 
-  // Create diff
+   // Create diff
   if (toBlobId == "workdir") {
     err = git_diff_tree_to_workdir_with_index(
         &diff,
@@ -2994,6 +2975,7 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
   // Iterate diff
   size_t deltaNum = git_diff_num_deltas(diff); // delta = one file change
   
+  DEBUG("LibGit diff deltaNum - "  << deltaNum);
   for (size_t i = 0; i < deltaNum; i++) {
     const git_diff_delta *delta = git_diff_get_delta(diff, i);
     FileDiff f;
@@ -3008,6 +2990,7 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
     err = git_patch_from_diff(&patch, diff, i);
 
     size_t hunkNum = git_patch_num_hunks(patch);
+    DEBUG("LibGit diff hunkNum - "  << hunkNum);
     for(int j = 0; j < hunkNum; j++){
       const git_diff_hunk* hunk;
 
@@ -3021,6 +3004,7 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
       h.newLinesCount = hunk->new_lines; 
       h.header = std::string(hunk->header); 
 
+      DEBUG("LibGit diff lineNum - "  << lineNum);
       for(int k = 0; k < lineNum; k++){
         const git_diff_line* line;
         git_patch_get_line_in_hunk(&line, patch, j, k);
