@@ -2992,9 +2992,9 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
   */
 
   // Iterate diff
-  size_t num_deltas = git_diff_num_deltas(diff); // delta = one file change
+  size_t deltaNum = git_diff_num_deltas(diff); // delta = one file change
   
-  for (size_t i = 0; i < num_deltas; ++i) {
+  for (size_t i = 0; i < deltaNum; i++) {
     const git_diff_delta *delta = git_diff_get_delta(diff, i);
     FileDiff f;
     
@@ -3008,7 +3008,7 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
     err = git_patch_from_diff(&patch, diff, i);
 
     size_t hunkNum = git_patch_num_hunks(patch);
-    for(int j = 0; j < hunkNum; i++){
+    for(int j = 0; j < hunkNum; j++){
       const git_diff_hunk* hunk;
 
       size_t lineNum = 0;
