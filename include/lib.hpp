@@ -402,6 +402,7 @@ public:
   std::map<ERROR, std::string> ERROR_STR;
 
   struct Edit {
+    int id = 0;
     OP op;
     TSRange range;
     std::string change;
@@ -414,17 +415,20 @@ public:
     Edit edit;
   };
  
-  FileEditor();
+  FileEditor(CSTTree &original, FileWriter &writer);
 
-  void queue(Edit e); // unordered
+  Edit queue(Edit e); // unordered
+  bool delEdit(int id);
   void reset();
   std::vector<Error> getConflictErrors();
-  std::vector<Error> apply(CSTTree &original, FileWriter &writer);
-  //TODO: with some call back , each chage one by one
-  void step();
+  void sortOperations(); // sorts the operation to have proper edits from bottom to top
+  std::vector<Error> step(CSTTree &tree, FileWriter &writer);
+  std::vector<Error> apply(CSTTree &tree, FileWriter &writer);
 
 private:
   std::vector<Edit> operations;
+  int edditIdCounter = 0;
+  int currStep = 0;
   std::vector<Error> errors;
 
   static TSPoint getNewEndPoint(const Edit& edit);
@@ -1647,6 +1651,7 @@ substitute:
 // FileEditor
 
 FileEditor::FileEditor() {
+  
 #define GENERATE_MAP(ENUM) OP_STR[ENUM] = #ENUM;
   FOREACH_OP(GENERATE_MAP)
 #undef GENERATE_MAP
@@ -1673,15 +1678,35 @@ ReaderWriterEngineTree getReaderWriterEngineTree(const File& file, const TSLangu
                      TSEngine eng(lang);             \
                      CSTTree t = eng.parse(fw);      
 
-void FileEditor::queue(FileEditor::Edit e) { 
+FileEditor::Edit FileEditor::queue(FileEditor::Edit e) { 
   DEBUG_FULL("FileEditor queue");
+  if(e.id == 0){
+    e.id = ++edditIdCounter;
+  }
   operations.push_back(e);
+  return e;
 };
+
+bool FileEditor::delEdit(int id){
+  bool deleted = false;
+  operations.erase(std::remove_if(operations.begin(), operations.end(),
+          [id, &deleted](const Edit& e){
+            bool found = e.id == id;
+            if(found){
+              deleted = true;
+            }
+            return found;
+          }
+        ));
+  return deleted;
+}
 
 void FileEditor::reset() {
   DEBUG_FULL("FileEditor queue");
   operations.clear();
   errors.clear();
+  edditIdCounter = 0;
+  currStep = 0;
 };
 
 TSPoint FileEditor::getNewEndPoint(const Edit &edit){
@@ -1768,30 +1793,8 @@ std::vector<FileEditor::Error> FileEditor::getConflictErrors(){
   return errors;
 }
 
-std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
-                                                 FileWriter &writer) {
-
-  DEBUG("FileEditor apply begins");
-  // TODO: maybe handle the conflicts based on some priority
-  getConflictErrors();
-
-  std::sort(operations.begin(), operations.end(),
-  [](const FileEditor::Edit &a, const FileEditor::Edit &b) {
-    // desc
-    if (a.op != b.op)
-      return a.op > b.op;
-    // desc
-    if (a.range.start_byte != b.range.start_byte)
-      return a.range.start_byte > b.range.start_byte;
-    // desc
-    return a.range.end_byte > b.range.end_byte;
-  });
-
-  for (size_t i = 0; i < operations.size(); i++) {
-
-    DEBUG("FileEditor apply op - " << i);
-
-    auto edit = operations[i];
+std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &writer){
+    auto edit = operations[currStep++];
     TSInputEdit te = {
           edit.range.start_byte,    // start_byte
           edit.range.end_byte,      // old_end_byte
@@ -1807,14 +1810,14 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
       te.old_end_byte = edit.range.start_byte;
       te.new_end_byte = edit.range.start_byte + (uint32_t)edit.change.length();
       writer.insert(edit.range.start_byte, edit.change);
-      original.edit(te, writer.snapshot().cont);
+      tree.edit(te, writer.snapshot().cont);
       break;
     }
     case FileEditor::OP::DELETE:
     {
       te.old_end_byte = edit.range.end_byte;
       writer.deleteCont(edit.range.start_byte, edit.range.end_byte);
-      original.edit(te, writer.snapshot().cont);
+      tree.edit(te, writer.snapshot().cont);
       break;
     }
     case FileEditor::OP::WRITE:
@@ -1822,7 +1825,7 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
       te.old_end_byte = edit.range.end_byte;
       te.new_end_byte = edit.range.start_byte + (uint32_t)edit.change.length();
       writer.write(edit.range.start_byte, edit.range.end_byte, edit.change);
-      original.edit(te, writer.snapshot().cont);
+      tree.edit(te, writer.snapshot().cont);
       break;
     }
     case FileEditor::OP::REPLACE:
@@ -1875,13 +1878,13 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
         te1.new_end_point.row = op.row + 1;
         te1.new_end_point.column = 0;
 
-        original.edit(te1, writer.snapshot().cont);
+        tree.edit(te1, writer.snapshot().cont);
       }
 
       break;
     }
     case FileEditor::OP::VALIDATE_CST: {
-      for (auto err : original.getErrors()) {
+      for (auto err : tree.getErrors()) {
         errors.push_back({CST_ERROR, err, edit});
       }
       break;
@@ -2020,6 +2023,34 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &original,
       break;
     }
     };
+}
+
+void FileEditor::sortOperations(){
+ std::sort(operations.begin(), operations.end(),
+  [](const FileEditor::Edit &a, const FileEditor::Edit &b) {
+    // desc
+    if (a.op != b.op)
+      return a.op > b.op;
+    // desc
+    if (a.range.start_byte != b.range.start_byte)
+      return a.range.start_byte > b.range.start_byte;
+    // desc
+    return a.range.end_byte > b.range.end_byte;
+  });
+
+}
+
+std::vector<FileEditor::Error> FileEditor::apply(CSTTree &tree, FileWriter &writer) {
+
+  DEBUG("FileEditor apply begins");
+  // TODO: maybe handle the conflicts based on some priority
+  getConflictErrors();
+  
+  sortOperations();
+
+  for(size_t i = 0; i < operations.size(); i++) {
+    DEBUG("FileEditor apply op - " << operations[i].id);
+    step(tree, writer);
   }
 
   DEBUG("FileEditor apply ends");
