@@ -407,7 +407,7 @@ public:
     TSRange range;
     std::string change;
     std::string context;
-    pcre2_code *rc;
+    std::vector<int> relatedEdits;
   };
   struct Error {
     ERROR e;
@@ -1884,14 +1884,27 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
       break;
     }
     case FileEditor::OP::VALIDATE_CST: {
-      for (auto err : tree.getErrors()) {
-        errors.push_back({CST_ERROR, err, edit});
+      for (auto& err : tree.getErrors()) {
+        // Find the modifying edit whose range overlaps this CST error
+        Edit causingEdit = edit; // fallback to the validate edit itself
+        for (auto& op : operations) {
+          if( NOT_CONFLICTING_OP(op.op)
+          || (op.op == OP::VALIDATE_CST) ) continue;
+          
+          bool overlaps = op.range.start_byte <= err.end_byte &&
+          op.range.end_byte   >= err.start_byte;
+          if (overlaps) {
+            causingEdit = op;
+              break;
+          }
+        }
+        errors.push_back({CST_ERROR, err, causingEdit});
       }
       break;
     }
     case FileEditor::OP::PRINT_PATH:
     {
-      std::cout << writer.snapshot().file.pathStr    << ":" 
+      std::cout << writer.getFile().pathStr    << ":" 
                 << edit.range.start_point.row    + 1 << ":" 
                 << edit.range.start_point.column + 1 << "\n";
       break;
@@ -1904,7 +1917,7 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
 
       FileReader r(writer.snapshot());
 
-      const auto& path = writer.snapshot().file.pathStr;
+      const auto& path = writer.getFile().pathStr;
 
       // one based                        
       const auto startRow = pOld.row     + 1;
@@ -1937,7 +1950,7 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
     {
       for (size_t i = 0; i < errors.size(); ++i) {
         const auto &err = errors[i];
-        std::cerr << writer.snapshot().file.pathStr << ":"
+        std::cerr << writer.getFile().pathStr << ":"
           << err.range.start_point.row + 1 << ":"
           << err.range.start_point.column + 1 << "\n";
 
@@ -1974,14 +1987,14 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
               std::cerr << "CST_ERROR:\n";
 
               std::cerr << "  Range: [" 
-                << err.range.start_point.row << ":" << err.range.start_point.column
+                << err.range.start_point.row + 1<< ":" << err.range.start_point.column
                 << " , " 
-                << err.range.end_point.row << ":" << err.range.end_point.column << "]\n";
+                << err.range.end_point.row + 1 << ":" << err.range.end_point.column << "]\n";
 
               std::cerr << "  Edit : [" 
-                << err.edit.range.start_point.row << ":" << err.edit.range.start_point.column
+                << err.edit.range.start_point.row + 1 << ":" << err.edit.range.start_point.column
                 << ", "
-                << err.edit.range.end_point.row << ":" << err.edit.range.end_point.column
+                << err.edit.range.end_point.row + 1 << ":" << err.edit.range.end_point.column
                 << "] -> \""
                 << err.edit.change << "\"\n\n";
               break;
