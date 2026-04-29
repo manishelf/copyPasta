@@ -521,11 +521,18 @@ class TSEngine;
 
 class CSTTree {
 private:
-  TSTree *tree;
+  std::unique_ptr<TSTree> tree;
   std::string_view source;
   std::string _source;
   TSEngine &parent;
+  
+  struct TSTreeDeleter {
+    void operator()(TSTree* t) const {
+      ts_tree_delete(t); // deletes once after last owner is deleted , previous owner gets null value
+    }
+  };
 
+  std::unique_ptr<TSTree, TSTreeDeleter> makeTreePtr(TSTree* tree);
 public:
   friend TSEngine;
 
@@ -546,7 +553,7 @@ public:
 
   // Returns a non-owning pointer to the underlying TSTree.
   // Use ts_tree_copy() if you need an independent lifetime.
-  TSTree *getRawTree() const { return tree; }
+  TSTree *getRawTree() const { return tree.get(); }
 
   void sync();
 };
@@ -2461,20 +2468,17 @@ template <class F> void ThreadPool::enqueue(F &&f) {
 // CSTTree
 
 CSTTree::CSTTree(TSTree *tree, std::string_view source, TSEngine &parent)
-    : source(source), parent(parent) {
+    : source(source), parent(parent) , tree(tree){
   DEBUG_FULL("CSTTree ctor");
-  this->tree = tree;
 };
 
 CSTTree::~CSTTree() { 
   DEBUG_FULL("CSTTree destroyed");
-  ts_tree_delete(tree);
-  tree = nullptr;
 };
 
 std::string CSTTree::sTree() {
   DEBUG_FULL("CSTTree sTree");
-  TSNode node = ts_tree_root_node(tree);
+  TSNode node = ts_tree_root_node(tree.get());
   char *raw = ts_node_string(node);
   auto res = std::string(raw);
   free(raw);
@@ -2515,7 +2519,7 @@ std::string CSTTree::getText(TSNode n){
 std::string CSTTree::asQuery() {
   DEBUG_FULL("CSTTree asQuery");
   std::string query;
-  TSNode node = ts_tree_root_node(tree);
+  TSNode node = ts_tree_root_node(tree.get());
   getQueryForNode(node, query);
   return query;
 };
@@ -2523,7 +2527,7 @@ std::string CSTTree::asQuery() {
 template <typename cb> 
 void CSTTree::find(TSQuery *query, cb handle) {
   DEBUG("CSTTree find start");
-  TSNode root = ts_tree_root_node(tree);
+  TSNode root = ts_tree_root_node(tree.get());
   TSQueryCursor *cursor = ts_query_cursor_new();
   ts_query_cursor_exec(cursor, query, root);
   TSQueryMatch match;
@@ -2565,18 +2569,16 @@ bool CSTTree::validate(const TSInputEdit ed, size_t insertL, size_t delL) {
 void CSTTree::edit(const TSInputEdit ed, const std::string &source) {
   DEBUG("CSTTree edit");
   this->source = source;
-  ts_tree_edit(tree, &ed);
+  ts_tree_edit(tree.get(), &ed);
   auto newTree = parent.parse(*this, source);
-  ts_tree_delete(tree);
-  tree = newTree.tree;
+  tree = std::move(newTree.tree);
   newTree.tree = nullptr;
 }
 
 void CSTTree::sync(){
   DEBUG("CSTTree sync");
   auto newTree = parent.parse(source);
-  ts_tree_delete(tree);
-  tree = newTree.tree;
+  tree = std::move(newTree.tree);
   newTree.tree = nullptr;
 }
 
