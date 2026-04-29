@@ -344,7 +344,6 @@ public:
     git_diff_flag_t flags;
   };
 
-  // TODO:
   std::vector<FileDiff> diff();
   std::vector<LibGit::FileDiff> diff(std::string fromBlobId, std::string toBlobId,
                                      git_diff_options opts = GIT_DIFF_OPTIONS_INIT); 
@@ -415,7 +414,7 @@ public:
     Edit edit;
   };
  
-  FileEditor(CSTTree &original, FileWriter &writer);
+  FileEditor();
 
   Edit queue(Edit e); // unordered
   bool delEdit(int id);
@@ -548,6 +547,8 @@ public:
   // Returns a non-owning pointer to the underlying TSTree.
   // Use ts_tree_copy() if you need an independent lifetime.
   TSTree *getRawTree() const { return tree; }
+
+  void sync();
 };
 
 class TSEngine {
@@ -1830,7 +1831,9 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
     }
     case FileEditor::OP::REPLACE:
     {
-      assert(0 && "NOT_IMPLEMENTED"); // TODO
+      writer.replaceAll(edit.change, edit.context);
+      tree.sync(); // substitutions may occur anywhere
+      break;
     }
     case FileEditor::OP::MARK:
     {
@@ -2564,6 +2567,14 @@ void CSTTree::edit(const TSInputEdit ed, const std::string &source) {
   this->source = source;
   ts_tree_edit(tree, &ed);
   auto newTree = parent.parse(*this, source);
+  ts_tree_delete(tree);
+  tree = newTree.tree;
+  newTree.tree = nullptr;
+}
+
+void CSTTree::sync(){
+  DEBUG("CSTTree sync");
+  auto newTree = parent.parse(source);
   ts_tree_delete(tree);
   tree = newTree.tree;
   newTree.tree = nullptr;
