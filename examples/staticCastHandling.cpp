@@ -113,9 +113,6 @@ int main(int argc, char** argv){
             // TODO: there is a better way to do this by using query on the original tree
             // that is the recomended thing to do as what I am doing here is VERY inefficient
             // not that slow in practice though
-            if(w.getFile().name == "ItemisedUsage.java"){
-              int t = 0;
-            }
             CSTTree tl = eng.parse(line);
             tl.find(q_3, [&row, &line, &r, &tl, &edt](TSQueryMatch match_inner){
                 assert(match_inner.capture_count == 3);

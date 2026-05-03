@@ -1,4 +1,9 @@
 
+#ifndef LOADER_
+#define LOADER_
+
+
+#include <memory>
 #include <stdexcept>
 #include <map>
 #include <string>
@@ -9,11 +14,11 @@
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
 
-#ifndef LOADER_
-#define LOADER_
-
 #ifdef _WIN32
-  #include <windows.h>
+  #define WIN32_LEAN_AND_MEAN
+  #define NOMINMAX
+  #include <windows.h> // TODO: this is VERY heavy and polutes the global namespace, 
+                       // should be used in IMPL only
   #define LIB_HANDLE HMODULE
 #else
   #include <dlfcn.h>
@@ -27,8 +32,8 @@ and put into depa/tree-sitter-parsers/tree-sitter-{lang} if make and c compiler 
 
 // API
 #define LIST_OF_PARSERS_PAGE "https://github.com/tree-sitter/tree-sitter/wiki/List-of-parsers"
-#define LIST_OF_PARSER_PATH "../deps/tree-sitter-wiki/List-of-parsers.md"
-#define PARSER_PATH "../deps/tree-sitter-parsers"
+//#define LIST_OF_PARSER_PATH "../deps/tree-sitter-wiki/List-of-parsers.md"
+#define PARSER_PATH "./deps/tree-sitter-parsers"
 #define BUILD_CMD "make -j4 -C"
 
 
@@ -62,42 +67,50 @@ static void close_library(LIB_HANDLE lib) {
 #endif
 }
 
-class TSLang{
+class LibHandle {
+  private:
+  LIB_HANDLE handle;
   public:
-  LIB_HANDLE handle = nullptr;
-  const TSLanguage* lang = nullptr;
   const std::string name;
-  TSLang(LIB_HANDLE handle, const TSLanguage* lang, std::string name);
-  TSLang(){};
-  
-  TSLang(TSLang&& other) noexcept {
-    handle = other.handle;
-    lang = other.lang;
-    other.handle = nullptr;
-    other.lang = nullptr;
-  }
-
-  TSLang& operator=(TSLang&& other) noexcept {
-    if (this != &other) {
-      if (handle) close_library(handle);
-      handle = other.handle;
-      lang = other.lang;
-      other.handle = nullptr;
-      other.lang = nullptr;
-    }
-    return *this;
-  }
-  
-  ~TSLang();
+  LibHandle(LIB_HANDLE handle, std::string name);
+  ~LibHandle();
+  LIB_HANDLE getRaw(){return handle;};
 };
 
-class Loader{
-  std::map<std::string, std::string> lookup;
-  static TSLang loadTSLangFromSelf(std::string lang);
-  static TSLang loadTSLangFromExtern(std::string libPath, std::string lang);
+class TSLang{
+  private:
+  const TSLanguage* lang;
   public:
-  Loader();
-  TSLang get(std::string lang);
+  const std::string name;
+  TSLang(const TSLanguage* lang, const std::string& name);
+  ~TSLang();
+  const TSLanguage* getRaw(){return lang;};
+};
+
+class TSLangWrapper{
+  std::shared_ptr<LibHandle> handle = nullptr;
+  std::shared_ptr<TSLang> lang = nullptr;
+  public:
+  
+  TSLangWrapper(LIB_HANDLE handle, const TSLanguage* lang,
+         const std::string& name);
+
+  std::shared_ptr<void> getHandle(){ return handle; }
+  std::shared_ptr<TSLang> getLang(){ return lang; }
+
+  bool isValid() const {
+    return lang.get() != nullptr && lang.get()->getRaw() != nullptr;
+  }
+};
+
+class TSLoader{
+  static std::once_flag initFlag;
+  public:
+  static std::map<std::string, std::string> lookup;
+  static TSLangWrapper loadTSLangFromSelf(std::string lang);
+  static TSLangWrapper loadTSLangFromExtern(std::string libPath, std::string lang);
+  TSLoader();
+  TSLangWrapper get(std::string lang);
 };
 
 #endif // LOADER_
@@ -108,38 +121,59 @@ class Loader{
 #ifndef LOADER_IMPLEMENTATION 
 #define LOADER_IMPLEMENTATION
 
-TSLang::TSLang(LIB_HANDLE handle, const TSLanguage* lang, const std::string name): name(name){ 
+LibHandle::LibHandle(LIB_HANDLE handle, std::string name): name(name){
   this->handle = handle;
-  this->lang = lang;
-}
+};
 
-TSLang::~TSLang() {
-  if (handle) {
-    DEBUG("unloaded ts lib " << name);
+LibHandle::~LibHandle(){
+  if(handle){
+    DEBUG_FULL("LibHandle Unloaded external lib " << name);
     close_library(handle);
   }
 }
 
-Loader::Loader(){
-  //FileReader reader(LIST_OF_PARSER_PATH);
-  FileReader reader({.cont = listOfParsers});
-  std::string pattern = 
-      R"(\|\s*([a-zA-Z]+)\s*\|\s*\[[a-zA-Z\.\/-]+\]\((https:\/\/[a-zA-Z0-9\:\/\.\-]+)\)\s*\|)";
-  DEBUG("loader init");
-  auto matches = reader.find(pattern, true, PCRE2_MULTILINE);
-  for(auto match : matches){
-    assert(match.captures.size() == 2);
-    auto langP = match.captures[0];
-    auto urlP = match.captures[1];
-    std::string langName = std::string(reader.get(langP.start_byte, langP.end_byte));
-    std::string gitUrl = std::string(reader.get(urlP.start_byte, urlP.end_byte));
-    lookup[langName] = gitUrl;
-    DEBUG("Loader lib available - " << langName << " from "+gitUrl);
+TSLang::TSLang(const TSLanguage* lang, const std::string& name): name(name){
+  this->lang = lang;
+}
+
+TSLang::~TSLang(){
+  if(lang){
+    DEBUG_FULL("TSLang deleted lang");
+    ts_language_delete(lang);
   }
+}
+
+TSLangWrapper::TSLangWrapper(LIB_HANDLE handle, const TSLanguage* lang, 
+                const std::string& name){
+  this->handle = std::make_shared<LibHandle>(handle, name);
+  this->lang = std::make_shared<TSLang>(lang, name);
+}
+
+std::once_flag TSLoader::initFlag; // needs a global instance to track init
+std::map<std::string, std::string> TSLoader::lookup;
+
+TSLoader::TSLoader(){
+   std::call_once(initFlag, [](){
+    //FileReader reader(LIST_OF_PARSER_PATH);
+    FileReader reader({.cont = listOfParsers});
+    std::string pattern = 
+      R"(\|\s*([^\|\s]+)\s*\|\s*\[[^\]]+\]\((https:\/\/[^\)]+)\)\s*\|)";
+    DEBUG("loader init");
+    auto matches = reader.find(pattern, true, PCRE2_MULTILINE);
+    for(const auto& match : matches){
+      assert(match.captures.size() == 2);
+      auto langP = match.captures[0];
+      auto urlP = match.captures[1];
+      std::string langName = std::string(reader.get(langP.start_byte, langP.end_byte));
+      std::string gitUrl = std::string(reader.get(urlP.start_byte, urlP.end_byte));
+      lookup[langName] = gitUrl;
+      DEBUG("Loader lib available - " << langName << " from "+gitUrl);
+    }
+  });
   DEBUG("loader init done");
 }
 
-TSLang Loader::loadTSLangFromSelf(std::string lang){
+TSLangWrapper TSLoader::loadTSLangFromSelf(std::string lang){
     std::string symbol = "tree_sitter_" + lang;
     
     //already Loaded or statically included
@@ -152,13 +186,13 @@ TSLang Loader::loadTSLangFromSelf(std::string lang){
 
     if(fn){
       const TSLanguage* tsLang = fn();
-      return TSLang(nullptr, tsLang, lang);
+      return TSLangWrapper(nullptr, tsLang, lang);
     }
 
-    return TSLang(nullptr, nullptr, lang);
+    return TSLangWrapper(nullptr, nullptr, lang);
 }
 
-TSLang Loader::loadTSLangFromExtern(std::string libPath, std::string lang)
+TSLangWrapper TSLoader::loadTSLangFromExtern(std::string libPath, std::string lang)
 {
     std::string symbol = "tree_sitter_" + lang;
 
@@ -176,18 +210,18 @@ TSLang Loader::loadTSLangFromExtern(std::string libPath, std::string lang)
 
     const TSLanguage* language = fn();
 
-    return TSLang(handle, language, lang);
+    return TSLangWrapper(handle, language, lang);
 }
 
 
-TSLang Loader::get(std::string lang){
+TSLangWrapper TSLoader::get(std::string lang){
 
   std::string repoPath = std::string(PARSER_PATH)+"/tree-sitter-"+lang;
 
   DEBUG("Loader get - " << lang);
-  TSLang tsLang  = loadTSLangFromSelf(lang);
+  TSLangWrapper tsLang  = loadTSLangFromSelf(lang);
 
-  if(tsLang.lang){
+  if(tsLang.isValid()){
     return tsLang;
   }
 
@@ -200,12 +234,13 @@ TSLang Loader::get(std::string lang){
 
   auto action =[&libExt, &tsLang, lang](DirWalker::STATUS status, File file){
 
-      DEBUG("Loader checking - "+file.pathStr);
+      DEBUG_FULL("Loader checking - "+file.pathStr);
 
       bool match = false;
       for(auto ext : libExt){
         if(file.name.find("libtree-sitter-"+lang+ext) != std::string::npos) {
           match = true;
+          break;
         }
       }
 
@@ -219,14 +254,18 @@ TSLang Loader::get(std::string lang){
       return DirWalker::STOP;
   }; 
 
-  walker.walk(action);
-
-  if(!(tsLang.lang && tsLang.handle)){
+  try{
+    walker.walk(action);
+    if(tsLang.isValid()){
+      return tsLang;
+    }
+  }catch(std::runtime_error e){
     std::string gitUrl = lookup[lang];
-    
-    INFO("Cloning " << gitUrl);
-    LibGit::clone(gitUrl, repoPath, true);
-
+    try{ 
+      LibGit::clone(gitUrl, repoPath, true);
+    }catch(std::runtime_error e){
+      ERROR(e.what());
+    }
     // TODO: make this cross platform and portable
     // or maybe make is fine?
     std::string compileCommand =  (BUILD_CMD + repoPath);
@@ -235,26 +274,27 @@ TSLang Loader::get(std::string lang){
     int status = std::system(compileCommand.c_str());
 
     if (status != 0) {
-      throw std::runtime_error("Unable to compile parser - " + compileCommand);
+      ERROR("Unable to compile parser - " + compileCommand);
     }
 
     walker.walk(action);
-  }
 
-  if(!(tsLang.lang && tsLang.handle)){
-    throw std::runtime_error("unable to load - "+lang);
-  }
+    if(!(tsLang.isValid())){
+      throw std::runtime_error("unable to load - "+lang);
+    }
 
-  INFO("Loaded TS Parser - " << lang);
-  DEBUG("abi - " << ts_language_abi_version(tsLang.lang));
-  auto name = ts_language_name(tsLang.lang);
-  if(name){
-    DEBUG("name - "+std::string(name));
-  }else{
-    DEBUG("lib may have abi < LANGUAGE_VERSION_WITH_RESERVED_WORDS");
+    INFO("Loaded TS Parser - " << lang);
+    DEBUG("abi - " << ts_language_abi_version(tsLang.getLang()->getRaw()));
+    auto name = ts_language_name(tsLang.getLang()->getRaw());
+    if(name){
+      DEBUG("name - "+std::string(name));
+    }else{
+      DEBUG("lib may have abi < LANGUAGE_VERSION_WITH_RESERVED_WORDS");
+    }
+    return tsLang; 
+
   }
-  
-  return tsLang; 
+  throw std::runtime_error("Unable to load TS parser - " + lang + " from " + walker.path);
 }
 
 #endif // LOADER_IMPLEMENTATION

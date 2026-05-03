@@ -1,5 +1,4 @@
 #include "git2/checkout.h"
-#include "git2/deprecated.h"
 #include "git2/diff.h"
 #include "git2/patch.h"
 #include "git2/signature.h"
@@ -244,7 +243,7 @@ public:
 
   bool save(); // save buf to underling file
   bool backup(const std::string &suffix = ".bak"); // create a backup in same folder
-  bool flush(std::string &path); // create if non existing , will over write existing
+  bool writeTo(const std::string &path); // create file if non existing , will over write existing
 
   FileWriter &copy(std::string &path); // load file cont to buf
 
@@ -254,19 +253,22 @@ public:
   FileWriter &write(size_t offset, std::string &cont);
   FileWriter &write(size_t from, size_t to, std::string &cont);
 
-  FileWriter &append(std::string &cont);
-  FileWriter &insert(size_t offset, std::string &newCont);
+  FileWriter &append(const std::string &cont);
+  FileWriter &insert(size_t offset, const std::string &newCont);
   FileWriter &insertRowBefore(size_t row, const std::string &line, bool preserveIndent = false);
   FileWriter &insertRowAfter(size_t row, const std::string &line, bool preserveIndent = false);
   FileWriter &deleteRow(size_t row);
   FileWriter &deleteCont(size_t from, size_t to);
 
-  FileWriter &replace(std::string pattern, std::string templateOrResult,
+  FileWriter &replace(const std::string& pattern, 
+                      const std::string& templateOrResult,
                       size_t nth_occ = 0, // 0 for first 1 for second and
                                           //-1 for last, -2 for last second and so on
                       uint32_t opt = PCRE2_SUBSTITUTE_GLOBAL | PCRE2_SUBSTITUTE_EXTENDED);
-  FileWriter &replaceAll(std::string pattern, std::string templateOrResult,
-                         uint32_t opt = PCRE2_SUBSTITUTE_GLOBAL |
+  FileWriter &replaceAll(
+                      const std::string& pattern,
+                      const std::string& templateOrResult,
+                      uint32_t opt = PCRE2_SUBSTITUTE_GLOBAL |
                                       PCRE2_SUBSTITUTE_EXTENDED);
 };
 
@@ -286,33 +288,38 @@ class LibGit {
   static std::once_flag lib_git_init;
   static void init();
 
-  git_checkout_options checkout_opts = GIT_CHECKOUT_OPTIONS_INIT;
-  git_diff_options diff_opts = GIT_DIFF_OPTIONS_INIT;
-	
 public:
+  LibGit();
   LibGit(git_repository *repo);
   ~LibGit();
+
+  LibGit(LibGit&& other); 
+  LibGit(const LibGit& other);
 
   static LibGit clone(std::string url, std::string path = ".", 
                       bool shallow = false, git_clone_options opts = GIT_CLONE_OPTIONS_INIT);
   static LibGit open(std::string path = ".");
+  static LibGit openOrInit(std::string path = ".");
  
   bool isPathIgnored(fs::path path);
-  bool isPathIgnored(std::string path);
+  bool isPathIgnored(const std::string& path);
   
-  void addIgnoreRule(std::string rule);
+  void addIgnoreRule(const std::string& rule);
 
   void add(const fs::path &path);
+  void add(const std::string& path);
   void addAll();
 
-  void checkout(std::string blobId, git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT);
-  void branchCreate(std::string name); 
-  void setSignature(std::string username, std::string email);
-  void commit(std::string message);
+  void checkout(const std::string& blobId, git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT);
+  
+  void setSignature(const std::string& username, const std::string& email);
+  void commit(const std::string message);
 
   void resetHead(git_reset_t opt = GIT_RESET_HARD);
 
-  bool branchExists(std::string name);
+  void branchCreate(const std::string& name); 
+
+  bool branchExists(const std::string& name);
 
   struct LineDiff {
     git_diff_line_t type = GIT_DIFF_LINE_ADDITION;
@@ -321,6 +328,7 @@ public:
     size_t fileOffset = 0; // offset in the original file to the content
     std::string cont;
     std::string blameAuthor;
+    std::string blameEmail;
     std::string blameCommit;
   };
 
@@ -354,8 +362,9 @@ public:
 
 // order based on increasing precedence 
 #define FOREACH_OP(OP)                                                         \
-  OP(FLUSH)                                                                    \
+  OP(WRITE_TO)                                                                 \
   OP(SAVE)                                                                     \
+  OP(SAVE_VALID_ONLY)                                                          \
   OP(PRINT_PATH)                                                               \
   OP(PRINT_ERRORS)                                                             \
   OP(VALIDATE_CST)                                                             \
@@ -363,9 +372,12 @@ public:
   OP(MARK)                                                                     \
   OP(WRITE)                                                                    \
   OP(INSERT)                                                                   \
+  OP(INSERT_ROW_BEFORE)                                                        \
+  OP(INSERT_ROW_AFTER)                                                         \
   OP(REPLACE)                                                                  \
   OP(DELETE)                                                                   \
-  OP(PRINT_CHANGE_BEFORE)                                                       
+  OP(PRINT_CHANGE_BEFORE)                                                      \
+  OP(BACKUP)                                                                   \
 
 #define NOT_CONFLICTING_OP(op)              \
   (   op == OP::PRINT_CHANGE_BEFORE         \
@@ -405,8 +417,8 @@ public:
     TSRange range;
     std::string change;
     std::string context;
-    std::vector<int> relatedEdits;
     int id = 0;
+    std::vector<int> relatedEdits;
   };
   struct Error {
     ERROR e;
@@ -420,10 +432,11 @@ public:
   bool delEdit(int id);
   void reset();
   std::vector<Error> getConflictErrors();
+  std::vector<Error> getErrors(){return errors;}
   void sortOperations(); // sorts the operation to have proper edits from bottom to top
   std::vector<Error> step(CSTTree &tree, FileWriter &writer);
   std::vector<Error> apply(CSTTree &tree, FileWriter &writer);
-
+  std::vector<FileEditor::Error> applySaveAndMarkErrors(CSTTree &tree, FileWriter &writer); 
 private:
   std::vector<Edit> operations;
   int edditIdCounter = 0;
@@ -435,7 +448,6 @@ private:
 
 class ThreadPool;
 class DirWalker {
-  bool _isValid;
 
 public:
   std::string path;
@@ -467,7 +479,7 @@ public:
 
   void copyConfig(DirWalker* from);
 
-  bool isValid() { return _isValid; }
+  bool isValid(); 
 
   std::vector<File> allChildren();
 
@@ -521,24 +533,24 @@ class TSEngine;
 
 class CSTTree {
 private:
-  std::string_view source;
-  std::string _source;
-  TSEngine &parent;
-  
   struct TSTreeDeleter {
     void operator()(TSTree* t) const {
       ts_tree_delete(t); // deletes once after last owner is deleted , previous owner gets null value
     }
   };
+
   std::unique_ptr<TSTree, TSTreeDeleter> tree;
+  std::string_view source;
+  TSEngine* parent;
 
 public:
   friend TSEngine;
 
-  CSTTree(TSTree *tree, std::string_view source, TSEngine &parent);
+  CSTTree(TSTree *tree, std::string_view source, TSEngine* parent);
+  CSTTree(const CSTTree& other);
   ~CSTTree();
 
-  std::string sTree();
+  std::string asSexpr();
   std::string asQuery();
   void getQueryForNode(TSNode node, std::string &query, size_t level = 0);
   std::string getText(TSNode n);
@@ -546,7 +558,7 @@ public:
   template <typename cb> void find(TSQuery *query, cb handle);
 
   bool validate(TSInputEdit edit, size_t insertL = 0, size_t delL = 0);
-  void edit(TSInputEdit edit, const std::string &source);
+  void edit(TSInputEdit edit, const std::string_view source);
 
   std::vector<TSRange> getErrors();
 
@@ -554,6 +566,9 @@ public:
   // Use ts_tree_copy() if you need an independent lifetime.
   TSTree *getRawTree() const { return tree.get(); }
 
+  TSEngine* getParent() const { return parent; }
+  std::string_view getSource() {return source; }
+  
   void sync();
 };
 
@@ -564,28 +579,30 @@ class TSEngine {
 public:
   TSEngine(const TSLanguage *lang);
   ~TSEngine();
-  const CSTTree parse(std::string_view source);
-  const CSTTree parse(const CSTTree &old, std::string_view modSource);
-  const CSTTree parse(FileReader &reader);
-  const CSTTree parse(FileWriter &writer);
+  CSTTree parse(std::string_view source);
+  CSTTree parse(const CSTTree &old, std::string_view modSource);
+  CSTTree parse(FileReader &reader);
+  CSTTree parse(FileWriter &writer);
 
   static TSRange getRange(TSNode n);
 
-  TSQuery *queryNew(std::string &queryExpr);
+  TSQuery *queryNew(std::string &queryExpr) const;
 
   std::map<std::string , std::string> getAvailableNodeTypes();
 
+  const TSLanguage* getRawLang() {return lang;};
+  TSParser* getRawParser() {return parser;};
+
 };
 
-struct ReaderWriterEngineTree {
-  FileReader fr;
-  FileWriter fw;
+struct ReaderWriterEditorEngineTree {
+  FileReader r;
+  FileWriter w;
   FileEditor edt;
   TSEngine eng;
   CSTTree t;
 };
-
-// ReaderWriterEngineTree getReaderWriterEngineTree(const File& file, const TSLanguage* lang);
+// ReaderWriterEditorEngineTree getReaderWriterEngineTree(const File& file, const TSLanguage* lang);
 // Use ReaderWriterEngineTree macro instead
 
 class ThreadPool {
@@ -672,7 +689,7 @@ class TSQueryCache {
   std::mutex mtx;
   std::map<std::pair<const TSEngine*, std::string>, TSQuery*> cache;
 public:
-  TSQuery* get(TSEngine* engine, const std::string& pattern); 
+  TSQuery* get(const TSEngine* engine, const std::string& pattern); 
   // thread safe
   static TSQueryCache &global() {
     static TSQueryCache instance;
@@ -684,11 +701,11 @@ public:
 #define LOG_LEVEL_DEBUG 0
 #define LOG_LEVEL_INFO  1
 #define LOG_LEVEL_WARN  2
-#define LOG_LEVEL_ERROR 3
-#define LOG_LEVEL_NONE  4
+#define LOG_LEVEL_NONE  3
+#define LOG_LEVEL_ERROR 4
 
 // Set active level
-#define LOGGER_LEVEL LOG_LEVEL_NONE
+int LOGGER_LEVEL = LOG_LEVEL_INFO;
 
 std::string inline currentTime(){                                                    
     using namespace std::chrono;                                                
@@ -706,24 +723,28 @@ std::string inline currentTime(){
     oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");                             
     oss << '.' << std::setw(3) << std::setfill('0') << millis;                  
     oss << std::setw(3) << std::setfill('0') << micros_rem;                     
-    return oss.str();                                                           
+    return oss.str();                                                          
 };
 
 // Core log macro
 #define LOG(level, label, msg)                                        \
     do {                                                              \
-        if (level >= LOGGER_LEVEL) {                                  \
-            std::cout << "[" << currentTime() << "] "                 \
+        if ((level) >= LOGGER_LEVEL) {                                \
+            std::ostream* out = &std::cout;                           \
+            if((level) >= LOG_LEVEL_ERROR){                           \
+              out = &std::cerr;                                       \
+            }                                                         \
+            (*out) << "[" << currentTime() << "] "                    \
                       << label                                        \
                       << " "                                          \
                       << msg                                          \
-                      << std::endl;                                   \
+                      << "\n";                                        \
         }                                                             \
     } while (0)
 #define DEBUG_FULL(msg) LOG(LOG_LEVEL_DEBUG_FULL, "[DEBUG_FULL]", msg)
 #define DEBUG(msg)      LOG(LOG_LEVEL_DEBUG,           "[DEBUG]", msg)
-#define INFO(msg)       LOG(LOG_LEVEL_INFO,            "[INFO ]", msg)
-#define WARN(msg)       LOG(LOG_LEVEL_WARN,            "[WARN ]", msg)
+#define INFO(msg)       LOG(LOG_LEVEL_INFO,            "[INFO]" , msg)
+#define WARN(msg)       LOG(LOG_LEVEL_WARN,            "[WARN]" , msg)
 #define ERROR(msg)      LOG(LOG_LEVEL_ERROR,           "[ERROR]", msg)
 
 #endif // LIB_H_
@@ -856,7 +877,7 @@ FileReader::FileReader(const FileSnapshot snap, size_t blockSize) {
   DEBUG_FULL("FileReader ctor with snap");
   snapshotMode = true;
   buf.reserve(snap.cont.length());
-  std::copy(snap.cont.begin(), snap.cont.end(), buf.begin());
+  buf.assign(snap.cont.begin(), snap.cont.end());
   bufStart = 0;
   bufSize = snap.cont.length();
   file = snap.file;
@@ -1029,9 +1050,10 @@ const char *FileReader::tsRead(void *payload, uint32_t byte_index,
     return nullptr;
   }
 
-  DEBUG_FULL("FileReader asTsInput read upto - " << byte_index);
   size_t blockSize =
       std::min(reader->blockSize, reader->file.size - byte_index);
+
+  DEBUG_FULL("FileReader asTsInput read from - " << byte_index <<" to - " <<  blockSize);
 
   // Ensure buffer covers requested range
   if (reader->buf.empty() || byte_index < reader->bufStart ||
@@ -1166,9 +1188,9 @@ std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
         int len = pcre2_get_error_message(rc, buffer, sizeof(buffer));
 
         if (len > 0) {
-          std::cerr << "PCRE2 error: " << buffer << "\n";
+          ERROR("PCRE2 error: " << buffer);
         } else {
-          std::cerr << "Unknown PCRE2 error: " << rc << "\n";
+          ERROR("Unknown PCRE2 error: " << rc);
         }
         pcre2_match_data_free(match_data);
         throw std::runtime_error("PCRE2 match error");
@@ -1257,7 +1279,7 @@ FileReader::block FileReader::next() {
     return {nullptr, 0};
   }
 
-  DEBUG_FULL("FileReader next - " << file.pathStr);
+  DEBUG_FULL("FileReader next - \n" << file.pathStr);
 
   size_t currentBlockSize = 0;
 
@@ -1290,7 +1312,7 @@ FileReader::block FileReader::prev() {
     return {nullptr, 0};
   }
 
-  DEBUG_FULL("FileReader prev - " << file.pathStr);
+  DEBUG_FULL("FileReader prev - \n" << file.pathStr);
 
   size_t currentBlockSize = std::min(FileReader::defaultBlockSize, pos);
 
@@ -1384,17 +1406,12 @@ bool FileWriter::backup(const std::string &suffix) {
     bkpPath =
         file.pathStr + "." + std::to_string(snap.lastModified) + suffix;
   }
-  INFO("FileWriter backup -" << bkpPath);
-  std::ofstream bkp = std::ofstream(bkpPath, std::ios::out | std::ios::trunc);
-  bkp << snap.cont;
-
-  bkp.flush();
-  bool res = bkp.good();
-  bkp.close();
-  if (res) {
+  INFO("FileWriter backup - \n" << bkpPath);
+  bool ok = writeTo(bkpPath);
+  if (ok) {
     snap.dirty = false;
   }
-  return res;
+  return ok;
 };
 
 TSPoint FileWriter::getP(size_t byteOffset) {
@@ -1402,7 +1419,7 @@ TSPoint FileWriter::getP(size_t byteOffset) {
 };
 
 bool FileWriter::save() {
-  INFO("FileWriter save " << file.pathStr);
+  INFO("FileWriter save - \n" << file.pathStr);
   std::ofstream bkp =
       std::ofstream(file.pathStr, std::ios::out | std::ios::trunc);
   snap.cont.shrink_to_fit();
@@ -1418,8 +1435,8 @@ bool FileWriter::save() {
   return res;
 };
 
-bool FileWriter::flush(std::string &path) {
-  INFO("FileWriter flush to " << path);
+bool FileWriter::writeTo(const std::string &path) {
+  INFO("FileWriter write to " << path);
   std::ofstream target = std::ofstream(path, std::ios::out | std::ios::trunc);
   target << snap.cont;
   target.flush();
@@ -1450,13 +1467,13 @@ FileWriter &FileWriter::copy(std::string &sourcePath) {
   UPDATE_SNAP_META(snap);
 };
 
-FileWriter &FileWriter::append(std::string &cont) {
+FileWriter &FileWriter::append(const std::string &cont) {
   DEBUG("FileWriter append");
   snap.cont.append(cont);
   UPDATE_SNAP_META(snap);
 }
 
-FileWriter &FileWriter::insert(size_t offset, std::string &slice) {
+FileWriter &FileWriter::insert(size_t offset, const std::string &slice) {
   assert(offset < snap.cont.size());
   DEBUG("FileWriter insert at - " << offset);
   snap.cont.insert(offset, slice);
@@ -1548,8 +1565,8 @@ FileWriter &FileWriter::insertRowBefore(size_t row, const std::string &cont, boo
 FileWriter &FileWriter::insertRowAfter(size_t row, const std::string &cont, bool preserveIndent) {
   return insertRowBefore(row+1, cont, preserveIndent);
 }
-FileWriter &FileWriter::replaceAll(std::string pattern,
-                                   std::string templateOrResult, uint32_t opt) {
+FileWriter &FileWriter::replaceAll(const std::string& pattern,
+                                   const std::string& templateOrResult, uint32_t opt) {
 
   DEBUG("FileWriter replaceAll start - " << pattern  << " to " << templateOrResult);
   pcre2_code *re = PcreCache::global().get(pattern, opt);
@@ -1579,7 +1596,7 @@ substitute:
                    &outLength);                        // out len
 
   if (rc == PCRE2_ERROR_NOMEMORY) {
-    std::cout << "PCR2_ERROR_NOMEMORY - " << outLength << std::endl;
+    ERROR("FileReader replaceAll PCR2_ERROR_NOMEMORY - " << outLength);
     goto substitute;
   }
 
@@ -1595,8 +1612,9 @@ substitute:
   UPDATE_SNAP_META(snap);
 };
 
-FileWriter &FileWriter::replace(std::string pattern,
-                                std::string templateOrResult, size_t nth,
+FileWriter &FileWriter::replace(const std::string& pattern,
+                                const std::string& templateOrResult,
+                                size_t nth,
                                 uint32_t opt) {
 
   DEBUG("FileWriter replace start - " << pattern  << " to " << templateOrResult);
@@ -1640,7 +1658,7 @@ substitute:
                         &outLength);
 
   if (rc == PCRE2_ERROR_NOMEMORY) {
-    std::cout << "PCR2_ERROR_NOMEMORY - " << outLength << std::endl;
+    ERROR("FileReader replace PCR2_ERROR_NOMEMORY - " << outLength);
     goto substitute;
   }
 
@@ -1668,7 +1686,7 @@ FileEditor::FileEditor() {
 };
 
 /*
-ReaderWriterEngineTree getReaderWriterEngineTree(const File& file, const TSLanguage* lang){
+ReaderWriterEditorEngineTree getReaderWriterEngineTree(const File& file, const TSLanguage* lang){
    // TODO: these should have move ctor, otherwise they are copied on return
    FileReader fr(file);
    FileWriter fw(fr.snapshot());
@@ -1820,6 +1838,48 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
       tree.edit(te, writer.snapshot().cont);
       break;
     }
+    case FileEditor::OP::INSERT_ROW_BEFORE: 
+    {
+      size_t rowByteStart = writer.getRowOffsets()[edit.range.start_point.row];
+      size_t insertedLen  = edit.change.length();
+      // +1 for the '\n' that insertRowBefore appends when not already present
+      bool hasNewline = !edit.change.empty() && edit.change.back() == '\n';
+      size_t totalLen = hasNewline ? insertedLen : insertedLen + 1;
+
+      writer.insertRowBefore(edit.range.start_point.row, edit.change, true);
+
+      te.start_byte     = rowByteStart;
+      te.old_end_byte   = rowByteStart;               
+      te.new_end_byte   = rowByteStart + totalLen;   
+
+      te.start_point    = { edit.range.start_point.row, 0 };
+      te.old_end_point  = { edit.range.start_point.row, 0 };
+      te.new_end_point  = { edit.range.start_point.row + 1, 0 };
+
+      tree.edit(te, writer.snapshot().cont);
+      break;
+    }
+    case FileEditor::OP::INSERT_ROW_AFTER: 
+    {
+      size_t rowByteStart = writer.getRowOffsets()[edit.range.end_point.row + 1];
+      size_t insertedLen  = edit.change.length();
+
+      bool hasNewline = !edit.change.empty() && edit.change.back() == '\n';
+      size_t totalLen = hasNewline ? insertedLen : insertedLen + 1;
+
+      writer.insertRowAfter(edit.range.end_point.row, edit.change, true);
+
+      te.start_byte     = rowByteStart;
+      te.old_end_byte   = rowByteStart;               
+      te.new_end_byte   = rowByteStart + totalLen;   
+
+      te.start_point    = { edit.range.end_point.row + 1  , 0 };
+      te.old_end_point  = { edit.range.end_point.row + 1  , 0 };
+      te.new_end_point  = { edit.range.end_point.row + 1 + 1, 0 };
+
+      tree.edit(te, writer.snapshot().cont);
+      break;
+    }
     case FileEditor::OP::DELETE:
     {
       te.old_end_byte = edit.range.end_byte;
@@ -1913,9 +1973,9 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
     }
     case FileEditor::OP::PRINT_PATH:
     {
-      std::cout << writer.getFile().pathStr    << ":" 
+      INFO("FileEditor current path - \n" << writer.getFile().pathStr    << ":" 
                 << edit.range.start_point.row    + 1 << ":" 
-                << edit.range.start_point.column + 1 << "\n";
+                << edit.range.start_point.column + 1);
       break;
     }
     case FileEditor::OP::PRINT_CHANGE_BEFORE:
@@ -1939,19 +1999,20 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
 
       const std::string_view originalText = r.get(oldStart, oldEnd);
 
-      std::cout << path << ":" << startRow << ":" << startCol << "\n";
-      std::cout << "range: " << startRow << ":" << startCol
-                << " -> " << endRow << ":" << endCol << "\n";
-      std::cout << this->OP_STR[edit.op] << " : ";
-      std::cout << edit.context << "\n";
+      INFO( "-----------------------------------------------------------------");
+      INFO("\n" << path << ":" << startRow << ":" << startCol);
+      INFO("range: " << startRow << ":" << startCol
+               << " -> " << endRow << ":" << endCol);
+      INFO(this->OP_STR[edit.op] << " : ");
+      INFO(edit.context);
 
-      std::cout << "<<<<<<<<"   << "\n";
-      std::cout.write(originalText.data(), static_cast<std::streamsize>(originalText.size())) << "\n";
-      std::cout << "========"   << "\n";
-      std::cout << edit.change  << "\n";
-      std::cout << ">>>>>>>>"   << "\n";
+      INFO("<<<<<<<<");
+      INFO("\n" << originalText);
+      INFO("========");
+      INFO(edit.change);
+      INFO(">>>>>>>>");
 
-      std::cout << "-----------------------------------------------------------------\n";
+      INFO( "-----------------------------------------------------------------");
 
       break;
     }
@@ -1959,9 +2020,9 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
     {
       for (size_t i = 0; i < errors.size(); ++i) {
         const auto &err = errors[i];
-        std::cerr << writer.getFile().pathStr << ":"
+        ERROR("\n" << writer.getFile().pathStr << ":"
           << err.range.start_point.row + 1 << ":"
-          << err.range.start_point.column + 1 << "\n";
+          << err.range.start_point.column + 1);
 
         switch (err.e) {
           case CONFLICT: 
@@ -1977,52 +2038,53 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
               size_t overlap_start = errX.range.start_byte;
               size_t overlap_end   = errX.range.end_byte;
 
-              std::cerr << "CONFLICT detected:\n";
+              ERROR("CONFLICT detected :");
 
-              std::cerr << "  Edit X : [" << x1 << ", " << x2 << "] -> \""
-                << errX.edit.change << "\"\n";
+              ERROR("  Edit X (edit - " << errX.edit.id << ") : [" << x1 << ", " << x2 << "] -> \""
+                << errX.edit.change << "\"");
 
-              std::cerr << "  Edit Y : [" << y1 << ", " << y2 << "] -> \""
-                << errY.edit.change << "\"\n";
+              ERROR("  Edit Y (edit - " << errY.edit.id << ") : [" << y1 << ", " << y2 << "] -> \""
+                << errY.edit.change << "\"");
 
-              std::cerr << "  Overlap: [" << overlap_start << ", "
-                << overlap_end << "]\n\n";
+              ERROR("  Overlap: [" << overlap_start << ", "
+                << overlap_end << "]\n");
 
               i++; 
               break;
             }
           case CST_ERROR: 
             {
-              std::cerr << "CST_ERROR:\n";
+              ERROR("CST_ERROR (edit - " << err.edit.id << ") :"); 
 
-              std::cerr << "  Range: [" 
+              ERROR("  Range: [" 
                 << err.range.start_point.row + 1<< ":" << err.range.start_point.column
                 << " , " 
-                << err.range.end_point.row + 1 << ":" << err.range.end_point.column << "]\n";
+                << err.range.end_point.row + 1 << ":" << err.range.end_point.column << "]");
 
-              std::cerr << "  Edit : [" 
+              ERROR("  Edit : [" 
                 << err.edit.range.start_point.row + 1 << ":" << err.edit.range.start_point.column
                 << ", "
                 << err.edit.range.end_point.row + 1 << ":" << err.edit.range.end_point.column
                 << "] -> \""
-                << err.edit.change << "\"\n\n";
+                << err.edit.change << "\"\n");
               break;
             }
           case CST_MISSING: 
             {
-              std::cerr << "CST_MISSING:\n";
-              std::cerr << "  Range: [" 
+              ERROR("CST_MISSING:");
+
+              ERROR("  Range: [" 
                 << err.range.start_byte
                 << ", " 
                 << err.range.end_byte 
-                << "]\n";
-              std::cerr << "  Edit : [" 
+                << "]");
+              ERROR("  Edit : [" 
                 << err.edit.range.start_byte
                 << ", " 
                 << err.edit.range.end_byte 
                 << "] -> \""
                 << err.edit.change 
-                << "\"\n\n";
+                << "\"\n");
               break;
             }
           default:
@@ -2031,13 +2093,31 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
       }
       break;
     }
-    case FileEditor::OP::SAVE: 
+    case FileEditor::OP::SAVE_VALID_ONLY: 
     {
-      writer.save();
+      if(writer.snapshot().dirty && errors.empty()){
+        writer.save();
+      }
       break;
     }
-    case FileEditor::OP::FLUSH: {
-      writer.flush(edit.change);
+    case FileEditor::OP::SAVE: 
+    {
+      if(writer.snapshot().dirty){
+        writer.save();
+      }
+      break;
+    }
+    case FileEditor::OP::BACKUP: 
+    {
+      if(!edit.change.empty()){
+        writer.backup(edit.change);
+      } else {
+        writer.backup();
+      }
+      break;
+    }
+    case FileEditor::OP::WRITE_TO: {
+      writer.writeTo(edit.change);
       break;
     }
     default: {
@@ -2063,6 +2143,47 @@ void FileEditor::sortOperations(){
 
 }
 
+std::vector<FileEditor::Error> FileEditor::applySaveAndMarkErrors(CSTTree &tree, FileWriter &writer) {
+  // TODO: fix this. this is behaving VERY wrong or maybe something else is wrong
+  queue({ SAVE });
+  queue({ VALIDATE_CST });
+  auto errs = apply(tree, writer);
+  if (!errs.empty()) {
+    INFO("FileEditor applySaveAndMarkErrors marking errors - " << errs.size() << " in \n" << writer.getFile().pathStr);
+    auto currErrors = errors;
+    auto currOp = operations;
+    auto currStepCount = currStep;
+    auto currEditIdCounter = edditIdCounter;
+    reset();
+    for (const auto& err : errs) {
+      std::string errorTag;
+      switch (err.e) {
+        case CONFLICT:    errorTag = "//ERROR: CONFLICT"; break;
+        case CST_ERROR:   errorTag = "//ERROR: CST_ERROR"; break;
+        case CST_MISSING: errorTag = "//ERROR: CST_MISSING"; break;
+        default:          errorTag = "//ERROR: UNKNOWN"; break;
+      }
+  
+      std::string expected = err.edit.change;
+  
+      std::string todoMsg = "//TODO: expected - " + expected;
+      queue({
+        MARK,
+        err.range,
+        errorTag,
+        todoMsg
+      });
+    }
+    queue({SAVE}); 
+    errs = apply(tree, writer);
+    reset();
+    errors = currErrors;
+    operations = currOp;
+    currStep = currStepCount;
+    edditIdCounter = currEditIdCounter;
+  }
+  return errs;
+}
 std::vector<FileEditor::Error> FileEditor::apply(CSTTree &tree, FileWriter &writer) {
 
   DEBUG("FileEditor apply begins");
@@ -2084,8 +2205,15 @@ std::vector<FileEditor::Error> FileEditor::apply(CSTTree &tree, FileWriter &writ
 DirWalker::DirWalker(std::string dir) {
   DEBUG_FULL("DirWalker ctor");
   path = dir;
-  _isValid = fs::exists(dir);
 };
+
+bool DirWalker::isValid(){
+  bool exists = fs::exists(path);
+  if(!exists){
+    ERROR("DirWalker isValid - path " << path << " does not exist");
+  }
+  return exists; 
+}
 
 void DirWalker::copyConfig(DirWalker* other){  
   recursive     = other->recursive;
@@ -2108,21 +2236,22 @@ template <typename Action> DirWalker::STATUS DirWalker::walk(Action &&action) {
 
 template <typename Payload, typename Action>
 DirWalker::STATUS DirWalker::walk(Action &&action, Payload &payload) {
-  LibGit repo = LibGit::open(path);
-  for(auto rule : ignore){
-    repo.addIgnoreRule(rule);
-  }
-  DEBUG("DirWalker walk begin - " << path);
-  auto res = walk(repo, action, payload);
-  DEBUG("DirWalker walk begin - " << path);
-  return res;
+ LibGit repo = LibGit::open(path);
+ for(auto rule : ignore){
+   repo.addIgnoreRule(rule);
+ }
+ DEBUG("DirWalker walk begin - " << path);
+ STATUS res = walk(repo, action, payload);
+
+ DEBUG("DirWalker walk begin - " << path);
+ return res;
 };
 
 template <typename Payload, typename Action>
 DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
                                   Payload &payload) {
 
-  if (!_isValid)
+  if (!isValid())
     return FAILED;
 
   DEBUG_FULL("DirWalker walk begin - " << path);
@@ -2156,21 +2285,21 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
   
     ACTION actRes;
     if(!filesOnly || !file.isDir){
-      DEBUG("DirWalker walk do job - " << file.pathStr);
+      DEBUG("DirWalker walk do job - \n" << file.pathStr);
       actRes = callAction(action, OPENED, file, repo, payload);
-      DEBUG("DirWalker walk job done- " << file.pathStr);
+      DEBUG("DirWalker walk job done - \n" << file.pathStr);
     } else{
       actRes = ACTION::CONTINUE;
     }
 
     if (actRes == ACTION::SKIP) {
-      DEBUG("DirWalker skip - " << file.pathStr);
+      DEBUG("DirWalker skip - \n" << file.pathStr);
       continue;
     } else if (actRes == ACTION::STOP) {
-      DEBUG("DirWalker stop - " << file.pathStr);
+      DEBUG("DirWalker stop - \n" << file.pathStr);
       return STATUS::STOPPED;
     } else if (actRes == ACTION::ABORT) {
-      DEBUG("DirWalker abort - " << file.pathStr);
+      DEBUG("DirWalker abort - \n" << file.pathStr);
       return STATUS::ABORTED;
     } else if (actRes == ACTION::CONTINUE &&
         !((file.name == ".") || (file.name == "..")) && file.isDir &&
@@ -2218,8 +2347,7 @@ void DirWalker::walk(ThreadPool &pool, Action &&action) {
 template <typename Payload, typename Action>
 void DirWalker::walk(ThreadPool &pool, Action &&action, Payload &payload) {
 
-  AbortSignal abortSignal =
-      std::make_shared<std::atomic<bool>>(false);
+  AbortSignal abortSignal = std::make_shared<std::atomic<bool>>(false);
 
   LibGit repo = LibGit::open(path);
   for(auto rule : ignore){
@@ -2233,6 +2361,10 @@ template <typename Payload, typename Action>
 void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
                      AbortSignal abortSignal,
                      Payload &payload) {
+
+  if(!isValid()){
+    return;
+  }
 
   DEBUG("DirWalker walk with pool start - " << path);
   std::vector<fs::directory_entry> entries(fs::directory_iterator(this->path),
@@ -2273,15 +2405,15 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
     }
 
     if (actRes == ACTION::STOP) {
-      DEBUG("DirWalker with pool stop - " << file.pathStr);
+      DEBUG("DirWalker with pool stop - \n" << file.pathStr);
       return;
     }
     if (actRes == ACTION::SKIP){
-      DEBUG("DirWalker with pool skip - " << file.pathStr);
+      DEBUG("DirWalker with pool skip - \n" << file.pathStr);
       continue;
     }
     if (actRes == ACTION::ABORT) {
-      DEBUG("DirWalker with pool abort - " << file.pathStr);
+      DEBUG("DirWalker with pool abort - \n" << file.pathStr);
       abortSignal->store(true);
       return;
     }
@@ -2307,15 +2439,15 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
       }
     } else {
 
-      DEBUG_FULL("DirWalker walk with pool enqueue job - " << file.pathStr);
+      DEBUG_FULL("DirWalker walk with pool enqueue job - \n" << file.pathStr);
       // create a anonlymous class that has action and file in constructor
       pool.enqueue([action, file, &repo, abortSignal, &payload]() {
         if (abortSignal->load())
           return;
 
-        DEBUG("DirWalker walk with pool do job - " << file.pathStr);
+        DEBUG("DirWalker walk with pool do job - \n" << file.pathStr);
         ACTION actRes = callAction(action, OPENED, file, repo, payload);
-        DEBUG("DirWalker walk with pool job done- " << file.pathStr);
+        DEBUG("DirWalker walk with pool job done - \n" << file.pathStr);
         if (actRes == ACTION::ABORT) {
           DEBUG("DirWalker with pool abort called");
           abortSignal->store(true);
@@ -2389,7 +2521,7 @@ std::shared_ptr<TSEngine> TSEnginePool::get(const TSLanguage* lang){
 }
 
 // TSQueryCache
-TSQuery* TSQueryCache::get(TSEngine* engine, const std::string& pattern) {
+TSQuery* TSQueryCache::get(const TSEngine* engine, const std::string& pattern) {
 
   DEBUG_FULL("TSQueryCache get lock mtx");
   std::lock_guard<std::mutex> lock(mtx);
@@ -2467,17 +2599,24 @@ template <class F> void ThreadPool::enqueue(F &&f) {
 
 // CSTTree
 
-CSTTree::CSTTree(TSTree *tree, std::string_view source, TSEngine &parent)
-    : source(source), parent(parent) , tree(tree ){
+CSTTree::CSTTree(TSTree *tree, std::string_view source, TSEngine* parent)
+    : source(source), parent(parent), tree(tree){
   DEBUG_FULL("CSTTree ctor");
 };
+
+CSTTree::CSTTree(const CSTTree& other)
+  : source(other.source),
+    parent(other.parent) {
+    DEBUG_FULL("CSTTree copy ctor");
+  tree = std::unique_ptr<TSTree, TSTreeDeleter>(ts_tree_copy(other.tree.get()));
+}
 
 CSTTree::~CSTTree() { 
   DEBUG_FULL("CSTTree destroyed");
 };
 
-std::string CSTTree::sTree() {
-  DEBUG_FULL("CSTTree sTree");
+std::string CSTTree::asSexpr() {
+  DEBUG_FULL("CSTTree asSexpr");
   TSNode node = ts_tree_root_node(tree.get());
   char *raw = ts_node_string(node);
   auto res = std::string(raw);
@@ -2503,9 +2642,9 @@ void CSTTree::getQueryForNode(TSNode node, std::string &query, size_t level) {
   }
 
   query.append(")");
-  // query.append("@");
-  // query.append(ts_node_type(node));
-  // query.append("_"+std::to_string(level));
+   query.append("@");
+   query.append(ts_node_type(node));
+   query.append("_"+std::to_string(level));
   query.append("\n");
 };
 
@@ -2566,18 +2705,18 @@ bool CSTTree::validate(const TSInputEdit ed, size_t insertL, size_t delL) {
   return true;
 };
 
-void CSTTree::edit(const TSInputEdit ed, const std::string &source) {
+void CSTTree::edit(const TSInputEdit ed, const std::string_view source) {
   DEBUG("CSTTree edit");
   this->source = source;
   ts_tree_edit(tree.get(), &ed);
-  auto newTree = parent.parse(*this, source);
+  auto newTree = parent->parse(*this, source);
   tree = std::move(newTree.tree);
   newTree.tree = nullptr;
 }
 
 void CSTTree::sync(){
   DEBUG("CSTTree sync");
-  auto newTree = parent.parse(source);
+  auto newTree = parent->parse(source);
   tree = std::move(newTree.tree);
   newTree.tree = nullptr;
 }
@@ -2591,8 +2730,7 @@ std::vector<TSRange> CSTTree::getErrors() {
   )";
 
   DEBUG("CSTTree getErrors start");
-  // parent is reference of TSEngine , is &parent ok here? 
-  TSQuery *sq = TSQueryCache::global().get(&parent, q);
+  TSQuery *sq = TSQueryCache::global().get(parent, q);
   std::vector<TSRange> errors;
   find(sq, [&errors](TSQueryMatch m) mutable {
     for (size_t i = 0; i < m.capture_count; i++) {
@@ -2622,45 +2760,51 @@ TSEngine::TSEngine(const TSLanguage *lang) {
 
 TSEngine::~TSEngine() { 
   DEBUG_FULL("TSEngine destroyed");
-  ts_parser_delete(parser);
+  if(parser){
+    ts_parser_delete(parser);
+  }
   parser = nullptr;
 };
 
-const CSTTree TSEngine::parse(FileReader &reader) {
-  DEBUG("TSEngine parse begin");
+
+CSTTree TSEngine::parse(FileReader &reader) {
+  DEBUG_FULL("TSEngine parse begin");
   TSTree *tree = ts_parser_parse(parser, NULL, reader.asTsInput());
-  DEBUG("TSEngine parse end");
-  return CSTTree(tree, reader.get(reader.bufStart, reader.bufSize), *this);
+  DEBUG_FULL("TSEngine parse end");
+  return CSTTree(tree, reader.get(reader.bufStart, reader.bufSize), this);
 }
 
-const CSTTree TSEngine::parse(FileWriter &writer) {
+CSTTree TSEngine::parse(FileWriter &writer) {
   auto source = writer.snapshot().cont;
-  DEBUG("TSEngine parse begin");
+  // TODO: use TSInput here
+  DEBUG_FULL("TSEngine parse begin");
   TSTree *tree =
       ts_parser_parse_string(parser, NULL, source.data(), source.length());
-  DEBUG("TSEngine parse end");
-  return CSTTree(tree, source, *this);
+  DEBUG_FULL("TSEngine parse end");
+  return CSTTree(tree, source, this);
 }
 
-const CSTTree TSEngine::parse(std::string_view source) {
-  DEBUG("TSEngine parse begin");
+CSTTree TSEngine::parse(std::string_view source) {
+  // TODO: use TSInput here
+  DEBUG_FULL("TSEngine parse begin");
   TSTree *tree =
       ts_parser_parse_string(parser, NULL, source.data(), source.length());
-  DEBUG("TSEngine parse end");
-  return CSTTree(tree, source, *this);
+  DEBUG_FULL("TSEngine parse end");
+  return CSTTree(tree, source, this);
 };
 
-const CSTTree TSEngine::parse(const CSTTree &old, std::string_view source) {
+CSTTree TSEngine::parse(const CSTTree &old, std::string_view source) {
+  // TODO: use TSInput here
   DEBUG("TSEngine parse begin");
   TSTree *tree =
       ts_parser_parse_string(parser, old.tree.get(), source.data(), source.length());
   DEBUG("TSEngine parse end");
-  return CSTTree(tree, source, *this);
+  return CSTTree(tree, source, this);
 };
 
-TSQuery *TSEngine::queryNew(std::string &queryExpr) {
+TSQuery * TSEngine::queryNew(std::string &queryExpr) const {
   DEBUG("TSEngine queryNew " << queryExpr);
-  uint32_t errorOffset;
+  uint32_t errorOffset = 0;
   TSQueryError error;
 
   TSQuery *query = ts_query_new(lang, queryExpr.c_str(), queryExpr.length(),
@@ -2674,6 +2818,7 @@ TSQuery *TSEngine::queryNew(std::string &queryExpr) {
       case TSQueryErrorField: errType = "Field"; break;
       case TSQueryErrorCapture: errType = "Capture"; break;
       case TSQueryErrorStructure: errType = "Structure"; break;
+      case TSQueryErrorLanguage: errType = "Language"; break;
       default: break;
     }
     std::string msg = "TSEngine::queryNew error: type=";
@@ -2751,6 +2896,27 @@ LibGit::LibGit(git_repository *repo) {
   setSignature(username, email);
 }
 
+LibGit::LibGit(LibGit&& other): repo(std::move(other.repo))
+  , root(std::move(other.root))
+  , username(std::move(other.username))
+  , email(std::move(other.email))
+  , signature(other.signature)
+  // mutex is default-constructed fresh — cannot be moved
+{
+  DEBUG_FULL("LibGit move ctor");
+  other.signature = nullptr;
+}
+
+LibGit::LibGit(const LibGit& other) {
+  DEBUG_FULL("LibGit copy ctor");
+  root = other.root;
+  username = other.username;
+  email = other.email;
+  signature = other.signature;
+  LibGit temp = LibGit::open(other.root);
+  repo = std::move(temp.repo);
+}
+
 LibGit::~LibGit(){
   DEBUG_FULL("LibGit destroyed");
   git_signature_free(signature);
@@ -2766,24 +2932,20 @@ LibGit::RepoPtr LibGit::make_repo(git_repository *raw){
 
 LibGit LibGit::clone(std::string url, std::string path, bool shallow, git_clone_options opts){
   init();
-  DEBUG("LibGit clone start");
-  try{
-    return open(path);
-  }catch(std::runtime_error e){
-    git_repository* repo = nullptr;
-    
-    if(shallow){
-      opts.fetch_opts.depth = 1;
-    }
-
-    if(git_clone(&repo, url.c_str(), path.c_str(), &opts) < 0){
-      auto e = git_error_last();
-      throw std::runtime_error(std::string("Unable to clone repository at " + url + " due to :") + 
-                        ((e && e->message) ? e->message : "Unknown"));
-    }
-    DEBUG("LibGit clone done");
-    return LibGit(repo);
+  DEBUG("LibGit clone start " << url << " to path " << path);
+  git_repository* repo = nullptr;
+  
+  if(shallow){
+    opts.fetch_opts.depth = 1;
   }
+
+  if(git_clone(&repo, url.c_str(), path.c_str(), &opts) < 0){
+    auto e = git_error_last();
+    throw std::runtime_error(std::string("Unable to clone repository at " + url + " due to :") + 
+                      ((e && e->message) ? e->message : "Unknown"));
+  }
+  DEBUG("LibGit clone done");
+  return LibGit(repo);
 }
 
 LibGit LibGit::open(std::string path){
@@ -2801,17 +2963,38 @@ LibGit LibGit::open(std::string path){
   return LibGit(repo);
 }
 
+LibGit LibGit::openOrInit(std::string path){
+  git_repository* repo = nullptr;
+  init();
+  DEBUG("LibGit open or init start");
+  if (git_repository_open(&repo, path.c_str()) < 0) {
+    if(git_repository_init(&repo, path.c_str(), /*isbare*/0) < 0){
+    const git_error* e = git_error_last();
+
+    throw std::runtime_error(std::string("Unable to open or init repository at " + path + " due to : ") +
+      (e && e->message ? e->message : "Unknown"));
+    }
+  }
+
+  DEBUG("LibGit open done");
+  return LibGit(repo);
+}
 bool LibGit::isPathIgnored(fs::path path){
   return isPathIgnored(path.string());
 }
 
-bool LibGit::isPathIgnored(std::string path){
+bool LibGit::isPathIgnored(const std::string& path){
   DEBUG_FULL("LibGit isPathIgnored");
   int ignored;
   if(git_ignore_path_is_ignored(&ignored, repo.get(), path.c_str()) < 0){
     return false;
   }
   return ignored == 1;
+}
+
+void LibGit::add(const std::string& path){
+  fs::path p(path);
+  add(p);
 }
 
 void LibGit::add(const fs::path &path) {
@@ -2849,11 +3032,11 @@ void LibGit::addAll(){
   }
 }
 
-void LibGit::addIgnoreRule(std::string rule){
+void LibGit::addIgnoreRule(const std::string& rule){
   git_ignore_add_rule(repo.get(), rule.c_str());
 }
 
-void LibGit::checkout(std::string blobId, git_checkout_options opts){
+void LibGit::checkout(const std::string& blobId, git_checkout_options opts){
   DEBUG("LibGit checkout - " << blobId);
 
   std::lock_guard<std::mutex> lock(gitMutex);
@@ -2887,7 +3070,7 @@ void LibGit::checkout(std::string blobId, git_checkout_options opts){
   }
 }
 
-bool LibGit::branchExists(std::string name){
+bool LibGit::branchExists(const std::string& name){
   git_reference* ref = nullptr;
   bool exists = git_reference_dwim(&ref, repo.get(), name.c_str()) == 0;
   if(ref){
@@ -2896,7 +3079,7 @@ bool LibGit::branchExists(std::string name){
   return exists;
 }
 
-void LibGit::branchCreate(std::string name){
+void LibGit::branchCreate(const std::string& name){
   DEBUG("LibGit branchCreate - " << name);
   std::lock_guard<std::mutex> lock(gitMutex);
   git_reference *ref = nullptr;
@@ -2919,7 +3102,7 @@ void LibGit::branchCreate(std::string name){
   }
 }
 
-void LibGit::setSignature(std::string username, std::string email){
+void LibGit::setSignature(const std::string& username, const std::string& email){
   this->username = username;
   this->email = email;
   if (git_signature_new(&signature, username.c_str(), email.c_str(), time(nullptr), 0) < 0) {
@@ -2971,13 +3154,13 @@ void LibGit::resetHead(git_reset_t opt){
     
     if(err < 0){
       const git_error* e = git_error_last();
-      throw std::runtime_error(std::string("Unable to create HEAD - ")  + " due to : " +
+      throw std::runtime_error(std::string("Unable to reset HEAD - ")  + " due to : " +
           (e && e->message ? e->message : "Unknown"));
     }
 }
 
 std::vector<LibGit::FileDiff> LibGit::diff(){
-  return diff("HEAD", "workdir");
+  return diff("HEAD", "");
 }
 
 std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string toBlobId,
@@ -2998,13 +3181,13 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
   err = git_object_peel((git_object**)&from_tree, from_obj, GIT_OBJECT_TREE);
 
   // Resolve TO (can be any git object)
-  if (toBlobId != "workdir") {
+  if (toBlobId != "") {
     err = git_revparse_single(&to_obj, repo.get(), toBlobId.c_str());
     err = git_object_peel((git_object**)&to_tree, to_obj, GIT_OBJECT_TREE);
   }
 
    // Create diff
-  if (toBlobId == "workdir") {
+  if (toBlobId == "") {
     err = git_diff_tree_to_workdir_with_index(
         &diff,
         repo.get(),
@@ -3032,7 +3215,7 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
   // Iterate diff
   size_t deltaNum = git_diff_num_deltas(diff); // delta = one file change
   
-  DEBUG("LibGit diff deltaNum - "  << deltaNum);
+  DEBUG_FULL("LibGit diff deltaNum - "  << deltaNum);
   for (size_t i = 0; i < deltaNum; i++) {
     const git_diff_delta *delta = git_diff_get_delta(diff, i);
     FileDiff f;
@@ -3047,7 +3230,7 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
     err = git_patch_from_diff(&patch, diff, i);
 
     size_t hunkNum = git_patch_num_hunks(patch);
-    DEBUG("LibGit diff hunkNum - "  << hunkNum);
+    DEBUG_FULL("LibGit diff hunkNum - "  << hunkNum);
     for(int j = 0; j < hunkNum; j++){
       const git_diff_hunk* hunk;
 
@@ -3060,8 +3243,21 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
       h.newStartLine = hunk->new_start; 
       h.newLinesCount = hunk->new_lines; 
       h.header = std::string(hunk->header); 
+      
+      git_blame* oldBlame = nullptr;
+      git_blame* newBlame = nullptr;
+      
+      if(!f.oldPath.empty()){
+        DEBUG_FULL("LibGit diff blame " << f.oldPath);
+        git_blame_file(&oldBlame, repo.get(), f.oldPath.c_str(), nullptr);
+      }
 
-      DEBUG("LibGit diff lineNum - "  << lineNum);
+      if(!f.newPath.empty()){
+        DEBUG_FULL("LibGit diff blame " << f.newPath);
+        git_blame_file(&newBlame, repo.get(), f.newPath.c_str(), nullptr);
+      }
+
+      DEBUG_FULL("LibGit diff lineNum - "  << lineNum);
       for(int k = 0; k < lineNum; k++){
         const git_diff_line* line;
         git_patch_get_line_in_hunk(&line, patch, j, k);
@@ -3071,15 +3267,50 @@ std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string t
         l.newLineNo = line->new_lineno;
         l.fileOffset = line->content_offset;
         l.cont = std::string(line->content, line->content_len);
-
-        //TODO
-        l.blameAuthor;
-        l.blameCommit;
+        
+        if (line->origin == GIT_DIFF_LINE_ADDITION) {
+          // Blame for new file
+          if (newBlame) {
+            const git_blame_hunk* bh = git_blame_get_hunk_byline(newBlame, l.newLineNo);
+            if(bh){
+              l.blameAuthor = bh->final_signature->name;
+              l.blameEmail = bh->final_signature->email;
+              l.blameCommit = git_oid_tostr_s(&bh->final_commit_id);
+            }
+          }
+        } else if (line->origin == GIT_DIFF_LINE_DELETION) {
+          if (oldBlame) {
+            const git_blame_hunk* bh = git_blame_get_hunk_byline(oldBlame, l.oldLineNo);
+            if(bh){
+              l.blameAuthor = bh->final_signature->name;
+              l.blameEmail = bh->final_signature->name;
+              l.blameCommit = git_oid_tostr_s(&bh->final_commit_id);
+            }
+          }
+        } else if (line->origin == GIT_DIFF_LINE_CONTEXT) {
+          if (newBlame) {
+            const git_blame_hunk* bh = git_blame_get_hunk_byline(newBlame, l.newLineNo);
+            if(bh){
+              l.blameAuthor = bh->final_signature->name;
+              l.blameEmail = bh->final_signature->name;
+              l.blameCommit = git_oid_tostr_s(&bh->final_commit_id);
+            }
+          } else if (oldBlame) {
+            const git_blame_hunk* bh = git_blame_get_hunk_byline(oldBlame, l.oldLineNo);
+            if(bh){
+              l.blameAuthor = bh->final_signature->name;
+              l.blameEmail = bh->final_signature->name;
+              l.blameCommit = git_oid_tostr_s(&bh->final_commit_id);
+            }
+          }
+        }
 
         h.lineDiffs.push_back(l);
         // git_line_free(line); // line is ref counted
       }
       f.hunks.push_back(h);
+      git_blame_free(oldBlame);
+      git_blame_free(newBlame);
       //git_hunk_free(hunk); //hunk is ref counted
     }
 
