@@ -1,6 +1,7 @@
 #include <cctype>
 #include <iostream>
 #include <lib.hpp>
+#include <loader.hpp>
 #include <string>
 #include <tree_sitter/api.h>
 #include <assert.h>
@@ -60,21 +61,24 @@ int main(int argc, char** argv){
         ) @cast 
   )";
 
-  const TSLanguage *lang = tree_sitter_java();
+  TSLoader l;
+
+  TSLangWrapper lang = l.get("java");
 
   walker.matchExt.insert(".java");
-  walker.walk(pool, [lang, &qf_2, &qf_3](DirWalker::STATUS s, File f) {
+  walker.walk([&lang, &qf_2, &qf_3](DirWalker::STATUS s, File f) {
 
     if(s == DirWalker::QUEUING) return DirWalker::CONTINUE;
 
     FileWriter w(f);
     FileReader r(f);
     FileEditor edt; 
-    TSEngine eng(lang);
+    TSEngine eng(lang.getLang()->getRaw());
 
     thread_local TSQuery* q_2 = eng.queryNew(qf_2);
 
     CSTTree t = eng.parse(w); 
+
 
     t.find(q_2, [&eng, &qf_3, &t, &w, &r, &edt](TSQueryMatch match) mutable{ 
       for(size_t i = 0; i < match.capture_count; i++ ){
@@ -109,6 +113,9 @@ int main(int argc, char** argv){
             // TODO: there is a better way to do this by using query on the original tree
             // that is the recomended thing to do as what I am doing here is VERY inefficient
             // not that slow in practice though
+            if(w.getFile().name == "ItemisedUsage.java"){
+              int t = 0;
+            }
             CSTTree tl = eng.parse(line);
             tl.find(q_3, [&row, &line, &r, &tl, &edt](TSQueryMatch match_inner){
                 assert(match_inner.capture_count == 3);
@@ -119,7 +126,7 @@ int main(int argc, char** argv){
                 loc0.start_point.row = row;
                 loc0.end_point.row = row;
 
-                int start0 = r.rowOffsets[row] + loc0.start_point.column;
+                int start0 = r.getRowOffsets()[row] + loc0.start_point.column;
                 int len0   = loc0.end_point.column - loc0.start_point.column;
 
                 loc0.start_byte = start0;
@@ -131,7 +138,7 @@ int main(int argc, char** argv){
                 loc1.start_point.row = row;
                 loc1.end_point.row = row;
 
-                int start1 = r.rowOffsets[row] + loc1.start_point.column;
+                int start1 = r.getRowOffsets()[row] + loc1.start_point.column;
                 int len1   = loc1.end_point.column - loc1.start_point.column;
 
                 loc1.start_byte = start1;
@@ -145,7 +152,7 @@ int main(int argc, char** argv){
                 loc2.start_point.row = row;
                 loc2.end_point.row = row;
 
-                int start2 = r.rowOffsets[row] + loc2.start_point.column;
+                int start2 = r.getRowOffsets()[row] + loc2.start_point.column;
                 int len2   = loc2.end_point.column - loc2.start_point.column;
 
                 loc2.start_byte = start2;
@@ -182,7 +189,8 @@ int main(int argc, char** argv){
                 newWrapper.append(text);
                 newWrapper.append(")");
 
-                edt.queue({FileEditor::OP::PRINT_CHANGE_BEFORE, loc0, newWrapper, "cast"});
+                //edt.queue({FileEditor::OP::PRINT_CHANGE_BEFORE, loc0, newWrapper, "cast"});
+                //edt.queue({FileEditor::OP::WRITE, loc0, newWrapper, "cast"});
                 edt.queue({FileEditor::OP::WRITE, loc0, newWrapper, "cast"});
                 //edt.queue({FileEditor::OP::PRINT_CHANGE_AFTER, loc0, newWrapper, "cast"});
 
@@ -193,13 +201,27 @@ int main(int argc, char** argv){
     });
 //    edt.queue({FileEditor::OP::VALIDATE_CST, {},{f.pathStr}});
 //    edt.queue({FileEditor::OP::PRINT_ERRORS});
-//    edt.queue({FileEditor::OP::SAVE});
+    edt.queue({FileEditor::OP::SAVE});
 
     edt.apply(t, w);
     edt.reset();
   
     return DirWalker::CONTINUE;
   });
+
+    LibGit repo = LibGit::open(walker.path);
+  
+  for(auto fdiff : repo.diff()){
+    cout << fdiff.newPath << endl;
+    for(auto hunk : fdiff.hunks){
+      cout << hunk.header << endl;
+      for(auto line: hunk.lineDiffs){
+        cout << (char)line.type << " ";
+        cout << line.cont;
+      }
+    }
+  }
+
 
   pool.waitUntilFinished();
 

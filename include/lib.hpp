@@ -401,12 +401,12 @@ public:
   std::map<ERROR, std::string> ERROR_STR;
 
   struct Edit {
-    int id = 0;
     OP op;
     TSRange range;
     std::string change;
     std::string context;
     std::vector<int> relatedEdits;
+    int id = 0;
   };
   struct Error {
     ERROR e;
@@ -521,7 +521,6 @@ class TSEngine;
 
 class CSTTree {
 private:
-  std::unique_ptr<TSTree> tree;
   std::string_view source;
   std::string _source;
   TSEngine &parent;
@@ -531,8 +530,8 @@ private:
       ts_tree_delete(t); // deletes once after last owner is deleted , previous owner gets null value
     }
   };
+  std::unique_ptr<TSTree, TSTreeDeleter> tree;
 
-  std::unique_ptr<TSTree, TSTreeDeleter> makeTreePtr(TSTree* tree);
 public:
   friend TSEngine;
 
@@ -669,14 +668,14 @@ public:
 };
 
 // Thread-safe query cache for reusing TSQuery* per engine and pattern
-class QueryCache {
+class TSQueryCache {
   std::mutex mtx;
   std::map<std::pair<const TSEngine*, std::string>, TSQuery*> cache;
 public:
   TSQuery* get(TSEngine* engine, const std::string& pattern); 
   // thread safe
-  static QueryCache &global() {
-    static QueryCache instance;
+  static TSQueryCache &global() {
+    static TSQueryCache instance;
     return instance;
   }
 };
@@ -1802,17 +1801,17 @@ std::vector<FileEditor::Error> FileEditor::getConflictErrors(){
 }
 
 std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &writer){
-    auto edit = operations[currStep++];
-    TSInputEdit te = {
-          edit.range.start_byte,    // start_byte
-          edit.range.end_byte,      // old_end_byte
-          edit.range.end_byte,      // new_end_byte
-          edit.range.start_point,   // start_point
-          edit.range.end_point,     // old_end_point
-          getNewEndPoint(edit),     // new_end_point
-    };
+  auto edit = operations[currStep++];
+  TSInputEdit te = {
+        edit.range.start_byte,    // start_byte
+        edit.range.end_byte,      // old_end_byte
+        edit.range.end_byte,      // new_end_byte
+        edit.range.start_point,   // start_point
+        edit.range.end_point,     // old_end_point
+        getNewEndPoint(edit),     // new_end_point
+  };
 
-    switch (edit.op) {
+  switch (edit.op) {
     case FileEditor::OP::INSERT: 
     {
       te.old_end_byte = edit.range.start_byte;
@@ -2045,7 +2044,8 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
       assert(0 && "NOT IMPLEMENTED");
       break;
     }
-    };
+  };
+  return errors;
 }
 
 void FileEditor::sortOperations(){
@@ -2388,15 +2388,15 @@ std::shared_ptr<TSEngine> TSEnginePool::get(const TSLanguage* lang){
   return ptr;
 }
 
-// QueryCache
-TSQuery* QueryCache::get(TSEngine* engine, const std::string& pattern) {
+// TSQueryCache
+TSQuery* TSQueryCache::get(TSEngine* engine, const std::string& pattern) {
 
-  DEBUG_FULL("QueryCache get lock mtx");
+  DEBUG_FULL("TSQueryCache get lock mtx");
   std::lock_guard<std::mutex> lock(mtx);
   auto key = std::make_pair(engine, pattern);
   auto it = cache.find(key);
   if (it != cache.end()){
-    DEBUG_FULL("QueryCache found from cache");
+    DEBUG_FULL("TSQueryCache found from cache");
     return it->second;
   }
   
@@ -2468,7 +2468,7 @@ template <class F> void ThreadPool::enqueue(F &&f) {
 // CSTTree
 
 CSTTree::CSTTree(TSTree *tree, std::string_view source, TSEngine &parent)
-    : source(source), parent(parent) , tree(tree){
+    : source(source), parent(parent) , tree(tree ){
   DEBUG_FULL("CSTTree ctor");
 };
 
@@ -2592,7 +2592,7 @@ std::vector<TSRange> CSTTree::getErrors() {
 
   DEBUG("CSTTree getErrors start");
   // parent is reference of TSEngine , is &parent ok here? 
-  TSQuery *sq = QueryCache::global().get(&parent, q);
+  TSQuery *sq = TSQueryCache::global().get(&parent, q);
   std::vector<TSRange> errors;
   find(sq, [&errors](TSQueryMatch m) mutable {
     for (size_t i = 0; i < m.capture_count; i++) {
@@ -2653,7 +2653,7 @@ const CSTTree TSEngine::parse(std::string_view source) {
 const CSTTree TSEngine::parse(const CSTTree &old, std::string_view source) {
   DEBUG("TSEngine parse begin");
   TSTree *tree =
-      ts_parser_parse_string(parser, old.tree, source.data(), source.length());
+      ts_parser_parse_string(parser, old.tree.get(), source.data(), source.length());
   DEBUG("TSEngine parse end");
   return CSTTree(tree, source, *this);
 };
