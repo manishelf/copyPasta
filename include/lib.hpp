@@ -2965,7 +2965,7 @@ void LibGit::resetHead(git_reset_t opt){
     err = git_revparse_single(&target, repo.get(), "HEAD");
 
     std::lock_guard<std::mutex> lock(gitMutex);
-    git_checkout_options opts;
+    git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
     err = git_reset(repo.get(), target, opt, &opts);
     git_object_free(target);
     
