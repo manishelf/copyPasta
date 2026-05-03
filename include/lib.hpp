@@ -995,7 +995,7 @@ FileReader::block FileReader::load(size_t from, size_t to) {
 
   size_t length = to - from;
   
-  if (from >= bufStart && to <= bufStart + bufSize) {
+  if (from >= bufStart && to <= bufSize) {
     return {&buf.data()[from - bufStart], length};
   }
 
@@ -1006,7 +1006,7 @@ FileReader::block FileReader::load(size_t from, size_t to) {
   std::ifstream iFileStream(file.path.c_str(), std::ios::binary | std::ios::ate); 
 
   iFileStream.seekg(bufSize, std::ios::beg);
-  iFileStream.read(buf.data(), to - bufSize);
+  iFileStream.read(&buf.data()[from], to - bufSize);
   size_t bytesRead = iFileStream.gcount();
 
   iFileStream.close();
@@ -1289,7 +1289,7 @@ FileReader::block FileReader::next() {
     currentBlockSize = defaultBlockSize;
   }
 
-  if (pos < bufStart || pos + currentBlockSize > bufStart + bufSize) {
+  if (pos < bufStart || pos + currentBlockSize > bufSize) {
     load(pos, pos + currentBlockSize);
     bufStart = pos;
   }
@@ -1316,7 +1316,7 @@ FileReader::block FileReader::prev() {
 
   size_t currentBlockSize = std::min(FileReader::defaultBlockSize, pos);
 
-  if (pos < bufStart || pos + currentBlockSize > bufStart + bufSize) {
+  if (pos < bufStart || pos + currentBlockSize > bufSize) {
     load(pos, pos + currentBlockSize);
     bufStart = pos;
   }
@@ -2495,6 +2495,7 @@ pcre2_code * PcreCache::get(const std::string &pattern, uint32_t opt_compile) {
       }
 
       msg += "...\n";
+      ERROR(msg);
       throw std::invalid_argument(msg);
     }
     pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
@@ -2504,7 +2505,7 @@ pcre2_code * PcreCache::get(const std::string &pattern, uint32_t opt_compile) {
     return it->second;
 }
 
-//TSEnginePool 
+//TSEnginePool (dont use with ThreadPool)
 std::shared_ptr<TSEngine> TSEnginePool::get(const TSLanguage* lang){
   
   DEBUG_FULL("TSEnginePool get lock mtx");
@@ -2824,6 +2825,7 @@ TSQuery * TSEngine::queryNew(std::string &queryExpr) const {
     std::string msg = "TSEngine::queryNew error: type=";
     msg += errType;
     msg += ", offset=" + std::to_string(errorOffset) + ", expr='" + queryExpr + "'";
+    ERROR(msg);
     throw std::runtime_error(msg);
   }
   
