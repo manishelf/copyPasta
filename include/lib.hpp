@@ -24,7 +24,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <sys/wait.h>
 #include <thread>
 #include <tree_sitter/api.h>
 #include <vector>
@@ -361,29 +360,29 @@ public:
 // FileEditor
 
 // order based on increasing precedence 
-#define FOREACH_OP(OP)                                                         \
-  OP(WRITE_TO)                                                                 \
-  OP(SAVE)                                                                     \
-  OP(SAVE_VALID_ONLY)                                                          \
-  OP(PRINT_PATH)                                                               \
-  OP(PRINT_ERRORS)                                                             \
-  OP(VALIDATE_CST)                                                             \
-  OP(PRINT_CHANGE_AFTER)                                                       \
-  OP(MARK)                                                                     \
-  OP(WRITE)                                                                    \
-  OP(INSERT)                                                                   \
-  OP(INSERT_ROW_BEFORE)                                                        \
-  OP(INSERT_ROW_AFTER)                                                         \
-  OP(REPLACE)                                                                  \
-  OP(DELETE)                                                                   \
-  OP(PRINT_CHANGE_BEFORE)                                                      \
-  OP(BACKUP)                                                                   \
+#define FOREACH_OP(OP)                                                            \
+  OP(OP_WRITE_TO)                                                                 \
+  OP(OP_SAVE)                                                                     \
+  OP(OP_SAVE_VALID_ONLY)                                                          \
+  OP(OP_PRINT_PATH)                                                            \
+  OP(OP_PRINT_ERRORS)                                                             \
+  OP(OP_VALIDATE_CST)                                                             \
+  OP(OP_PRINT_CHANGE_AFTER)                                                       \
+  OP(OP_MARK)                                                                     \
+  OP(OP_WRITE)                                                                    \
+  OP(OP_INSERT)                                                                   \
+  OP(OP_INSERT_ROW_BEFORE)                                                        \
+  OP(OP_INSERT_ROW_AFTER)                                                         \
+  OP(OP_REPLACE)                                                                  \
+  OP(OP_DELETE)                                                                   \
+  OP(OP_PRINT_CHANGE_BEFORE)                                                      \
+  OP(OP_BACKUP)                                                                   \
 
-#define NOT_CONFLICTING_OP(op)              \
-  (   op == OP::PRINT_CHANGE_BEFORE         \
-   || op == OP::PRINT_CHANGE_AFTER          \
-   || op == OP::PRINT_PATH                  \
-   || op == OP::PRINT_ERRORS                \
+#define NOT_CONFLICTING_OP(op)                 \
+  (   op == OP::OP_PRINT_CHANGE_BEFORE         \
+   || op == OP::OP_PRINT_CHANGE_AFTER          \
+   || op == OP::OP_PRINT_PATH                  \
+   || op == OP::OP_PRINT_ERRORS                \
   )   
 
 
@@ -717,7 +716,12 @@ std::string inline currentTime(){
                                                                                 
     std::time_t t = system_clock::to_time_t(secs);                              
     std::tm tm{};                                                               
-    localtime_r(&t, &tm);                                                       
+
+#ifdef _WIN32 // fk this sht
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
                                                                                 
     std::ostringstream oss;                                                     
     oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");                             
@@ -745,7 +749,7 @@ std::string inline currentTime(){
 #define DEBUG(msg)      LOG(LOG_LEVEL_DEBUG,           "[DEBUG]", msg)
 #define INFO(msg)       LOG(LOG_LEVEL_INFO,            "[INFO]" , msg)
 #define WARN(msg)       LOG(LOG_LEVEL_WARN,            "[WARN]" , msg)
-#define ERROR(msg)      LOG(LOG_LEVEL_ERROR,           "[ERROR]", msg)
+#define LERROR(msg)      LOG(LOG_LEVEL_ERROR,          "[ERROR]", msg)
 
 #endif // LIB_H_
 
@@ -760,8 +764,8 @@ void File::loadFromEntry(){
   if (dir_entry.exists()) {
     DEBUG_FULL("File loadFromEntry");
     path = fs::absolute(dir_entry.path().lexically_normal());
-    name = path.filename();
-    ext = path.extension();
+    name = path.filename().string();
+    ext = path.extension().string();
     status = dir_entry.status();
     isDir = fs::is_directory(status);
     isReg = fs::is_regular_file(status);
@@ -772,7 +776,7 @@ void File::loadFromEntry(){
     }
     isValid = true;
   } else {
-    ERROR("File is invalid - " << dir_entry.path());
+    LERROR("File is invalid - " << dir_entry.path().string());
     isValid = false;
   }
 }
@@ -783,7 +787,7 @@ File::File(std::string path): dir_entry(path), pathStr(path){
   loadFromEntry();
 };
 
-File::File(fs::directory_entry entry): dir_entry(entry), pathStr(entry.path()) {
+File::File(fs::directory_entry entry): dir_entry(entry), pathStr(entry.path().string()) {
   DEBUG_FULL("File ctor - " << pathStr);
   level = 0;
   loadFromEntry();
@@ -914,7 +918,7 @@ void FileReader::readFileMetadata() {
 
     load(0, blockSize);
   } else {
-    ERROR("FileReader readFileMetadata failed");
+    LERROR("FileReader readFileMetadata failed");
     bufSize = 0;
     bufStart = 0;
     _isValid = false;
@@ -1188,9 +1192,9 @@ std::vector<FileReader::MatchResult> FileReader::findWith(pcre2_code *re,
         int len = pcre2_get_error_message(rc, buffer, sizeof(buffer));
 
         if (len > 0) {
-          ERROR("PCRE2 error: " << buffer);
+          LERROR("PCRE2 error: " << buffer);
         } else {
-          ERROR("Unknown PCRE2 error: " << rc);
+          LERROR("Unknown PCRE2 error: " << rc);
         }
         pcre2_match_data_free(match_data);
         throw std::runtime_error("PCRE2 match error");
@@ -1596,7 +1600,7 @@ substitute:
                    &outLength);                        // out len
 
   if (rc == PCRE2_ERROR_NOMEMORY) {
-    ERROR("FileReader replaceAll PCR2_ERROR_NOMEMORY - " << outLength);
+    LERROR("FileReader replaceAll PCR2_ERROR_NOMEMORY - " << outLength);
     goto substitute;
   }
 
@@ -1658,7 +1662,7 @@ substitute:
                         &outLength);
 
   if (rc == PCRE2_ERROR_NOMEMORY) {
-    ERROR("FileReader replace PCR2_ERROR_NOMEMORY - " << outLength);
+    LERROR("FileReader replace PCR2_ERROR_NOMEMORY - " << outLength);
     goto substitute;
   }
 
@@ -1738,8 +1742,8 @@ TSPoint FileEditor::getNewEndPoint(const Edit &edit){
 
     TSPoint p = edit.range.start_point;
 
-    // DELETE → nothing inserted
-    if (edit.op == OP::DELETE) {
+    // OP_DELETE → nothing inserted
+    if (edit.op == OP::OP_DELETE) {
         return p;
     }
 
@@ -1830,7 +1834,7 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
   };
 
   switch (edit.op) {
-    case FileEditor::OP::INSERT: 
+    case OP_INSERT: 
     {
       te.old_end_byte = edit.range.start_byte;
       te.new_end_byte = edit.range.start_byte + (uint32_t)edit.change.length();
@@ -1838,7 +1842,7 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
       tree.edit(te, writer.snapshot().cont);
       break;
     }
-    case FileEditor::OP::INSERT_ROW_BEFORE: 
+    case OP_INSERT_ROW_BEFORE: 
     {
       size_t rowByteStart = writer.getRowOffsets()[edit.range.start_point.row];
       size_t insertedLen  = edit.change.length();
@@ -1859,7 +1863,7 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
       tree.edit(te, writer.snapshot().cont);
       break;
     }
-    case FileEditor::OP::INSERT_ROW_AFTER: 
+    case OP_INSERT_ROW_AFTER: 
     {
       size_t rowByteStart = writer.getRowOffsets()[edit.range.end_point.row + 1];
       size_t insertedLen  = edit.change.length();
@@ -1880,14 +1884,14 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
       tree.edit(te, writer.snapshot().cont);
       break;
     }
-    case FileEditor::OP::DELETE:
+    case OP_DELETE:
     {
       te.old_end_byte = edit.range.end_byte;
       writer.deleteCont(edit.range.start_byte, edit.range.end_byte);
       tree.edit(te, writer.snapshot().cont);
       break;
     }
-    case FileEditor::OP::WRITE:
+    case OP_WRITE:
     {
       te.old_end_byte = edit.range.end_byte;
       te.new_end_byte = edit.range.start_byte + (uint32_t)edit.change.length();
@@ -1895,13 +1899,13 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
       tree.edit(te, writer.snapshot().cont);
       break;
     }
-    case FileEditor::OP::REPLACE:
+    case OP_REPLACE:
     {
       writer.replaceAll(edit.change, edit.context);
       tree.sync(); // substitutions may occur anywhere
       break;
     }
-    case FileEditor::OP::MARK:
+    case OP_MARK:
     {
       size_t rowStart = edit.range.start_point.row;
       size_t rowEnd =   edit.range.end_point.row;
@@ -1952,13 +1956,13 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
 
       break;
     }
-    case FileEditor::OP::VALIDATE_CST: {
+    case OP_VALIDATE_CST: {
       for (auto& err : tree.getErrors()) {
         // Find the modifying edit whose range overlaps this CST error
         Edit causingEdit = edit; // fallback to the validate edit itself
         for (auto& op : operations) {
           if( NOT_CONFLICTING_OP(op.op)
-          || (op.op == OP::VALIDATE_CST) ) continue;
+          || (op.op == OP::OP_VALIDATE_CST) ) continue;
           
           bool overlaps = op.range.start_byte <= err.end_byte &&
           op.range.end_byte   >= err.start_byte;
@@ -1971,15 +1975,15 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
       }
       break;
     }
-    case FileEditor::OP::PRINT_PATH:
+    case OP_PRINT_PATH:
     {
       INFO("FileEditor current path - \n" << writer.getFile().pathStr    << ":" 
                 << edit.range.start_point.row    + 1 << ":" 
                 << edit.range.start_point.column + 1);
       break;
     }
-    case FileEditor::OP::PRINT_CHANGE_BEFORE:
-    case FileEditor::OP::PRINT_CHANGE_AFTER:
+    case OP_PRINT_CHANGE_BEFORE:
+    case OP_PRINT_CHANGE_AFTER:
     {
       const auto pOld = edit.range.start_point;
       const auto pNew = getNewEndPoint(edit);
@@ -2016,11 +2020,11 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
 
       break;
     }
-    case FileEditor::OP::PRINT_ERRORS:
+    case OP_PRINT_ERRORS:
     {
       for (size_t i = 0; i < errors.size(); ++i) {
         const auto &err = errors[i];
-        ERROR("\n" << writer.getFile().pathStr << ":"
+        LERROR("\n" << writer.getFile().pathStr << ":"
           << err.range.start_point.row + 1 << ":"
           << err.range.start_point.column + 1);
 
@@ -2038,15 +2042,15 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
               size_t overlap_start = errX.range.start_byte;
               size_t overlap_end   = errX.range.end_byte;
 
-              ERROR("CONFLICT detected :");
+              LERROR("CONFLICT detected :");
 
-              ERROR("  Edit X (edit - " << errX.edit.id << ") : [" << x1 << ", " << x2 << "] -> \""
+              LERROR("  Edit X (edit - " << errX.edit.id << ") : [" << x1 << ", " << x2 << "] -> \""
                 << errX.edit.change << "\"");
 
-              ERROR("  Edit Y (edit - " << errY.edit.id << ") : [" << y1 << ", " << y2 << "] -> \""
+              LERROR("  Edit Y (edit - " << errY.edit.id << ") : [" << y1 << ", " << y2 << "] -> \""
                 << errY.edit.change << "\"");
 
-              ERROR("  Overlap: [" << overlap_start << ", "
+              LERROR("  Overlap: [" << overlap_start << ", "
                 << overlap_end << "]\n");
 
               i++; 
@@ -2054,14 +2058,14 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
             }
           case CST_ERROR: 
             {
-              ERROR("CST_ERROR (edit - " << err.edit.id << ") :"); 
+              LERROR("CST_ERROR (edit - " << err.edit.id << ") :"); 
 
-              ERROR("  Range: [" 
+              LERROR("  Range: [" 
                 << err.range.start_point.row + 1<< ":" << err.range.start_point.column
                 << " , " 
                 << err.range.end_point.row + 1 << ":" << err.range.end_point.column << "]");
 
-              ERROR("  Edit : [" 
+              LERROR("  Edit : [" 
                 << err.edit.range.start_point.row + 1 << ":" << err.edit.range.start_point.column
                 << ", "
                 << err.edit.range.end_point.row + 1 << ":" << err.edit.range.end_point.column
@@ -2071,14 +2075,14 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
             }
           case CST_MISSING: 
             {
-              ERROR("CST_MISSING:");
+              LERROR("CST_MISSING:");
 
-              ERROR("  Range: [" 
+              LERROR("  Range: [" 
                 << err.range.start_byte
                 << ", " 
                 << err.range.end_byte 
                 << "]");
-              ERROR("  Edit : [" 
+              LERROR("  Edit : [" 
                 << err.edit.range.start_byte
                 << ", " 
                 << err.edit.range.end_byte 
@@ -2093,21 +2097,21 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
       }
       break;
     }
-    case FileEditor::OP::SAVE_VALID_ONLY: 
+    case OP_SAVE_VALID_ONLY: 
     {
       if(writer.snapshot().dirty && errors.empty()){
         writer.save();
       }
       break;
     }
-    case FileEditor::OP::SAVE: 
+    case OP_SAVE: 
     {
       if(writer.snapshot().dirty){
         writer.save();
       }
       break;
     }
-    case FileEditor::OP::BACKUP: 
+    case OP_BACKUP: 
     {
       if(!edit.change.empty()){
         writer.backup(edit.change);
@@ -2116,7 +2120,7 @@ std::vector<FileEditor::Error> FileEditor::step(CSTTree &tree, FileWriter &write
       }
       break;
     }
-    case FileEditor::OP::WRITE_TO: {
+    case OP_WRITE_TO: {
       writer.writeTo(edit.change);
       break;
     }
@@ -2145,8 +2149,8 @@ void FileEditor::sortOperations(){
 
 std::vector<FileEditor::Error> FileEditor::applySaveAndMarkErrors(CSTTree &tree, FileWriter &writer) {
   // TODO: fix this. this is behaving VERY wrong or maybe something else is wrong
-  queue({ SAVE });
-  queue({ VALIDATE_CST });
+  queue({ OP_SAVE });
+  queue({ OP_VALIDATE_CST });
   auto errs = apply(tree, writer);
   if (!errs.empty()) {
     INFO("FileEditor applySaveAndMarkErrors marking errors - " << errs.size() << " in \n" << writer.getFile().pathStr);
@@ -2168,13 +2172,13 @@ std::vector<FileEditor::Error> FileEditor::applySaveAndMarkErrors(CSTTree &tree,
   
       std::string todoMsg = "//TODO: expected - " + expected;
       queue({
-        MARK,
+        OP_MARK,
         err.range,
         errorTag,
         todoMsg
       });
     }
-    queue({SAVE}); 
+    queue({OP_SAVE}); 
     errs = apply(tree, writer);
     reset();
     errors = currErrors;
@@ -2210,7 +2214,7 @@ DirWalker::DirWalker(std::string dir) {
 bool DirWalker::isValid(){
   bool exists = fs::exists(path);
   if(!exists){
-    ERROR("DirWalker isValid - path " << path << " does not exist");
+    LERROR("DirWalker isValid - path " << path << " does not exist");
   }
   return exists; 
 }
@@ -2420,7 +2424,7 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
  
     if (!((file.name == ".") || (file.name == "..")) && file.isDir &&
         recursive && !inverted) {
-      DirWalker child(file.path);
+      DirWalker child(file.pathStr);
       child.copyConfig(this);
       child.level = level + 1;
       child.walk(repo, pool, action, abortSignal, payload);
@@ -2495,7 +2499,7 @@ pcre2_code * PcreCache::get(const std::string &pattern, uint32_t opt_compile) {
       }
 
       msg += "...\n";
-      ERROR(msg);
+      LERROR(msg);
       throw std::invalid_argument(msg);
     }
     pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
@@ -2825,7 +2829,7 @@ TSQuery * TSEngine::queryNew(std::string &queryExpr) const {
     std::string msg = "TSEngine::queryNew error: type=";
     msg += errType;
     msg += ", offset=" + std::to_string(errorOffset) + ", expr='" + queryExpr + "'";
-    ERROR(msg);
+    LERROR(msg);
     throw std::runtime_error(msg);
   }
   
@@ -3009,13 +3013,13 @@ void LibGit::add(const fs::path &path) {
   std::lock_guard<std::mutex> lock(gitMutex);
   int err = 0;
   err = git_repository_index(&index, repo.get());
-  err = git_index_add_bypath(index, relPath.c_str());
+  err = git_index_add_bypath(index, relPath.string().c_str());
   err = git_index_write(index);
   git_index_free(index);
 
   if(err < 0){
     const git_error* e = git_error_last();
-    throw std::runtime_error(std::string("Unable to add file ") + relPath.c_str() + " due to : " +
+    throw std::runtime_error(std::string("Unable to add file ") + relPath.string().c_str() + " due to : " +
         (e && e->message ? e->message : "Unknown"));
   }
 };

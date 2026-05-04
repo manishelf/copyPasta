@@ -89,4 +89,9 @@ target_link_libraries(
 message(STATUS "Project: ${PROJECT_NAME} v${PROJECT_VERSION}")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
-
+# build for windows - 
+# sudo apt install mingw-w64
+# cmake .. \
+#   -DCMAKE_SYSTEM_NAME=Windows \
+#   -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+#   -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++

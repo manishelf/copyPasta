@@ -3,4 +3,5 @@ copyPasta
 *.a
 *.so
 /build
+/build-win
 /.cache

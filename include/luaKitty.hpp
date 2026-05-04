@@ -112,7 +112,8 @@ void LuaExecutor::watchAndExec(const std::string& path, int pollIntervalMs) {
       try {
        this->exec(path);
       } catch (const std::exception& e) {
-        ERROR("[LuaExecutor] " << e.what());
+        LERROR("[LuaExecutor] Error");
+        LERROR(e.what());
       }
       execDoneOnce = true;
     }
@@ -601,42 +602,42 @@ void LuaExecutor::bindEditor(){
       r.end_byte = r.start_byte;
       r.end_point = r.start_point;
       std::string context = cap["context"].cast<std::string>();
-      ed->queue({ FileEditor::OP::INSERT, r, text, context });
+      ed->queue({ FileEditor::OP_INSERT, r, text, context });
     })
     .addFunction("insertAfter", +[](FileEditor* ed, LuaRef cap, const std::string& text) {
       TSRange r = LKHelpers::capToRange(cap);
       r.start_byte = r.end_byte;
       r.start_point = r.end_point;
       std::string context = cap["context"].cast<std::string>();
-      ed->queue({ FileEditor::OP::INSERT, r, text, context });
+      ed->queue({ FileEditor::OP_INSERT, r, text, context });
     })
     .addFunction("insertRowBefore", +[](FileEditor* ed, luabridge::LuaRef cap) {
       TSRange r    = LKHelpers::capToRange(cap);
       std::string change = cap["change"].cast<std::string>();
       std::string context = cap["context"].cast<std::string>(); 
-      ed->queue({ FileEditor::OP::INSERT_ROW_BEFORE, r, change, context });
+      ed->queue({ FileEditor::OP_INSERT_ROW_BEFORE, r, change, context });
     })
     .addFunction("insertRowAfter", +[](FileEditor* ed, luabridge::LuaRef cap) {
       TSRange r    = LKHelpers::capToRange(cap);
       std::string change = cap["change"].cast<std::string>();
       std::string context = cap["context"].cast<std::string>(); 
-      ed->queue({ FileEditor::OP::INSERT_ROW_AFTER, r, change, context });
+      ed->queue({ FileEditor::OP_INSERT_ROW_AFTER, r, change, context });
     })
     .addFunction("write", +[](FileEditor* ed, LuaRef cap, const std::string& text) {
       TSRange r = LKHelpers::capToRange(cap);
       std::string context = cap["context"].cast<std::string>();
-      ed->queue({ FileEditor::OP::WRITE, r, text, context });
+      ed->queue({ FileEditor::OP_WRITE, r, text, context });
     })
     .addFunction("replace", +[](FileEditor* ed, LuaRef cap, 
                                 const std::string& pattern, const std::string& tpl) {
       TSRange r = LKHelpers::capToRange(cap);
-      ed->queue({ FileEditor::OP::REPLACE, r, tpl, pattern });
+      ed->queue({ FileEditor::OP_REPLACE, r, tpl, pattern });
     })
     .addFunction("delete", +[](FileEditor* ed, LuaRef cap) {
       TSRange r = LKHelpers::capToRange(cap);
       std::string change = cap["change"].cast<std::string>();
       std::string context = cap["context"].cast<std::string>();
-      ed->queue({ FileEditor::OP::DELETE, r, change, context });
+      ed->queue({ FileEditor::OP_DELETE, r, change, context });
     })
     .addFunction("deleteWithPad", +[](FileEditor* ed, LuaRef cap, uint32_t pad) {
       TSRange r = LKHelpers::capToRange(cap);
@@ -644,44 +645,44 @@ void LuaExecutor::bindEditor(){
       r.end_byte += pad;
       std::string change = cap["change"].cast<std::string>();
       std::string context = cap["context"].cast<std::string>();
-      ed->queue({ FileEditor::OP::DELETE, r, change , context });
+      ed->queue({ FileEditor::OP_DELETE, r, change, context });
     })
     .addFunction("printBefore", +[](FileEditor* ed, LuaRef cap) {
       TSRange r = LKHelpers::capToRange(cap);
       std::string change = cap["change"].cast<std::string>();
       std::string context = cap["context"].cast<std::string>(); 
-      ed->queue({ FileEditor::OP::PRINT_CHANGE_BEFORE, r, change, context });
+      ed->queue({ FileEditor::OP_PRINT_CHANGE_BEFORE, r, change, context });
     })
     .addFunction("printAfter", +[](FileEditor* ed, LuaRef cap) {
       TSRange r = LKHelpers::capToRange(cap);
       std::string change = cap["change"].cast<std::string>();
       std::string context = cap["context"].cast<std::string>(); 
-      ed->queue({ FileEditor::OP::PRINT_CHANGE_AFTER, r, change, context });
+      ed->queue({ FileEditor::OP_PRINT_CHANGE_AFTER, r, change, context });
     })
     .addFunction("mark", +[](FileEditor* ed, luabridge::LuaRef cap) {
       TSRange r = LKHelpers::capToRange(cap);
       std::string text = cap["change"].cast<std::string>();
       std::string info = cap["context"].cast<std::string>(); 
-      ed->queue({ FileEditor::OP::MARK, r, text, info });
+      ed->queue({ FileEditor::OP_MARK, r, text, info });
     })
     .addFunction("validate", +[](FileEditor* ed, LuaRef cap) {
       std::string change = cap["change"].cast<std::string>();
       std::string context = cap["context"].cast<std::string>(); 
-      ed->queue({ FileEditor::OP::VALIDATE_CST , {}, change, context});
+      ed->queue({ FileEditor::OP_VALIDATE_CST , {}, change, context});
     })
     .addFunction("printErrors", +[](FileEditor* ed, LuaRef cap) {
       std::string change = cap["change"].cast<std::string>();
       std::string context = cap["context"].cast<std::string>(); 
-      ed->queue({ FileEditor::OP::PRINT_ERRORS, {}, change, context });
+      ed->queue({ FileEditor::OP_PRINT_ERRORS, {}, change, context });
     })
     .addFunction("backup", +[](FileEditor* ed, LuaRef cap, const std::string& suffix) {
-      ed->queue({ FileEditor::OP::BACKUP, {}, suffix });
+      ed->queue({ FileEditor::OP_BACKUP, {}, suffix });
     })
     .addFunction("writeTo", +[](FileEditor* ed, const std::string& path) {
-      ed->queue({ FileEditor::OP::WRITE_TO, TSRange{}, path, "" });
+      ed->queue({ FileEditor::OP_WRITE_TO, TSRange{}, path, "" });
     })
     .addFunction("queueSave", +[](FileEditor* ed, const std::string& path) {
-      ed->queue({ FileEditor::OP::SAVE });
+      ed->queue({ FileEditor::OP_SAVE });
     })
     .addFunction("getErrors", +[](FileEditor* ed, lua_State* L) -> luabridge::LuaRef {
       auto errs = ed->getErrors();
@@ -698,12 +699,12 @@ void LuaExecutor::bindEditor(){
       return LKHelpers::makeErrorTable(L, errs);
     })
     .addFunction("applyAndSave", +[](FileEditor* ed, CSTTree* t, FileWriter* w, lua_State* L) -> LuaRef {
-      ed->queue({ FileEditor::OP::SAVE });
+      ed->queue({ FileEditor::OP_SAVE });
       auto errs = ed->apply((*t), (*w));
       return LKHelpers::makeErrorTable(L, errs);
     })
     .addFunction("applyAndSaveValidOnly", +[](FileEditor* ed, CSTTree* t, FileWriter* w, lua_State* L) -> LuaRef {
-      ed->queue({ FileEditor::OP::SAVE_VALID_ONLY });
+      ed->queue({ FileEditor::OP_SAVE_VALID_ONLY });
       auto errs = ed->apply((*t), (*w));
       return LKHelpers::makeErrorTable(L, errs);
     })
@@ -782,7 +783,7 @@ void LuaExecutor::bindHelpers() {
     .beginNamespace("Table")
       .addFunction("print", +[](LuaRef t, lua_State* L) {
         if (!t.isTable()) {
-          ERROR("Not a table");
+          LERROR("Not a table");
           return;
         }
 

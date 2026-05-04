@@ -16,7 +16,6 @@
 
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
-  #define NOMINMAX
   #include <windows.h> // TODO: this is VERY heavy and polutes the global namespace, 
                        // should be used in IMPL only
   #define LIB_HANDLE HMODULE
@@ -264,7 +263,7 @@ TSLangWrapper TSLoader::get(std::string lang){
     try{ 
       LibGit::clone(gitUrl, repoPath, true);
     }catch(std::runtime_error e){
-      ERROR(e.what());
+      LERROR(e.what());
     }
     // TODO: make this cross platform and portable
     // or maybe make is fine?
@@ -274,7 +273,7 @@ TSLangWrapper TSLoader::get(std::string lang){
     int status = std::system(compileCommand.c_str());
 
     if (status != 0) {
-      ERROR("Unable to compile parser - " + compileCommand);
+      LERROR("Unable to compile parser - " + compileCommand);
     }
 
     walker.walk(action);
