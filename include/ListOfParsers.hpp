@@ -99,6 +99,8 @@ Column names and values are:
 | cuda | [github.com/tree-sitter-grammars/tree-sitter-cuda](https://github.com/tree-sitter-grammars/tree-sitter-cuda) | 2025-03-16 | 14 | yes | yes |
 | cue | [github.com/eonpatapon/tree-sitter-cue](https://github.com/eonpatapon/tree-sitter-cue) | 2025-02-03 | 14 | yes | yes |
 | cylc | [github.com/elliotfontaine/tree-sitter-cylc](https://github.com/elliotfontaine/tree-sitter-cylc) | 2025-06-06 | 14 | yes | no |
+)"
+R"(
 | d | [github.com/gdamore/tree-sitter-d](https://github.com/gdamore/tree-sitter-d) | 2025-06-29 | 14 | yes | yes |
 | dafny | [github.com/hath995/tree-sitter-dafny](https://github.com/hath995/tree-sitter-dafny) | 2026-03-23 | 14 | yes | yes |
 | dart | [github.com/UserNobody14/tree-sitter-dart](https://github.com/UserNobody14/tree-sitter-dart) | 2025-02-28 | 14 | yes | yes |
@@ -209,6 +211,8 @@ Column names and values are:
 | http | [github.com/rest-nvim/tree-sitter-http](https://github.com/rest-nvim/tree-sitter-http) | 2025-03-28 | 14 | yes | no |
 | hurl | [github.com/pfeiferj/tree-sitter-hurl](https://github.com/pfeiferj/tree-sitter-hurl) | 2024-09-14 | 14 | yes | no |
 | hyprlang | [github.com/tree-sitter-grammars/tree-sitter-hyprlang](https://github.com/tree-sitter-grammars/tree-sitter-hyprlang) | 2025-06-03 | 15 | yes | no |
+)"
+R"(
 | ibmhlasm | [github.com/janus-llm/tree-sitter-ibmhlasm](https://github.com/janus-llm/tree-sitter-ibmhlasm) | 2024-03-21 | 14 | yes | yes |
 | idl | [github.com/cathaysia/tree-sitter-idl](https://github.com/cathaysia/tree-sitter-idl) | 2025-07-22 | 15 | yes | no |
 | idris | [github.com/kayhide/tree-sitter-idris](https://github.com/kayhide/tree-sitter-idris) | 2024-11-05 | 14 | yes | yes |
@@ -302,6 +306,8 @@ Column names and values are:
 | nu | [github.com/LhKipp/tree-sitter-nu](https://github.com/LhKipp/tree-sitter-nu) | 2025-02-15 | 14 | yes | yes |
 | nu | [github.com/fdncred/tree-sitter-nu](https://github.com/fdncred/tree-sitter-nu) | 2025-03-29 | 14 | yes | yes |
 | nu | [github.com/nushell/tree-sitter-nu](https://github.com/nushell/tree-sitter-nu) | 2025-07-16 | 15 | yes | yes |
+ )"
+R"(
 | objc | [github.com/jiyee/tree-sitter-objc](https://github.com/jiyee/tree-sitter-objc) | 2022-08-11 | 13 | yes | no |
 | objc | [github.com/tree-sitter-grammars/tree-sitter-objc](https://github.com/tree-sitter-grammars/tree-sitter-objc) | 2025-01-31 | 14 | yes | no |
 | objdump | [github.com/ColinKennedy/tree-sitter-objdump](https://github.com/ColinKennedy/tree-sitter-objdump) | 2023-11-13 | 14 | yes | yes |
@@ -381,6 +387,8 @@ Column names and values are:
 | ruby | [github.com/tree-sitter/tree-sitter-ruby](https://github.com/tree-sitter/tree-sitter-ruby) | 2025-01-30 | 14 | yes | yes |
 | runescript | [github.com/2004Scape/tree-sitter-runescript](https://github.com/2004Scape/tree-sitter-runescript) | 2024-11-06 | 14 | yes | yes |
 | rust | [github.com/tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust) | 2025-04-02 | 15 | yes | yes |
+)"
+R"(
 | satysfi | [github.com/monaqa/tree-sitter-satysfi](https://github.com/monaqa/tree-sitter-satysfi) | 2023-04-09 | 14 | yes | yes |
 | scala | [github.com/tree-sitter/tree-sitter-scala](https://github.com/tree-sitter/tree-sitter-scala) | 2025-06-08 | 14 | yes | yes |
 | scfg | [git.sr.ht/~rockorager/tree-sitter-scfg](https://git.sr.ht/~rockorager/tree-sitter-scfg) | 2024-07-10 | - | no | no |
@@ -432,6 +440,8 @@ Column names and values are:
 | systemrdl | [github.com/SystemRDL/tree-sitter-systemrdl](https://github.com/SystemRDL/tree-sitter-systemrdl) | 2024-05-12 | - | no | no |
 | systemtap | [github.com/ok-ryoko/tree-sitter-systemtap](https://github.com/ok-ryoko/tree-sitter-systemtap) | 2024-08-07 | 14 | yes | no |
 | systemverilog | [github.com/gmlarumbe/tree-sitter-systemverilog](https://github.com/gmlarumbe/tree-sitter-systemverilog) | 2025-07-24 | 15 | yes | no |
+)"
+R"(                                                                        
 | t32 | [codeberg.org/xasc/tree-sitter-t32](https://codeberg.org/xasc/tree-sitter-t32) | 2025-07-19 | 15 | yes | yes |
 | tablegen | [github.com/tree-sitter-grammars/tree-sitter-tablegen](https://github.com/tree-sitter-grammars/tree-sitter-tablegen) | 2024-05-05 | 14 | yes | yes |
 | tablegen | [github.com/Flakebi/tree-sitter-tablegen](https://github.com/Flakebi/tree-sitter-tablegen) | 2024-10-04 | 14 | yes | yes |

@@ -154,7 +154,7 @@ std::map<std::string, std::string> TSLoader::lookup;
 TSLoader::TSLoader(){
    std::call_once(initFlag, [](){
     //FileReader reader(LIST_OF_PARSER_PATH);
-    FileReader reader({.cont = listOfParsers});
+    FileReader reader({listOfParsers});
     std::string pattern = 
       R"(\|\s*([^\|\s]+)\s*\|\s*\[[^\]]+\]\((https:\/\/[^\)]+)\)\s*\|)";
     DEBUG("loader init");

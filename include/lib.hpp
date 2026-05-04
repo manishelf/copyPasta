@@ -23,6 +23,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <sstream>
 #include <string_view>
 #include <thread>
 #include <tree_sitter/api.h>
