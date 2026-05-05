@@ -7,6 +7,20 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# for windows /MD instead of /MT 
+set(STATIC_CRT OFF CACHE BOOL "" FORCE) #libgit2
+cmake_policy(SET CMP0091 NEW)
+
+if(MSVC)
+  # force /MD
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+      CACHE STRING "" FORCE)
+
+  # disable MD warnings for depricated things
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+  set(USE_WINHTTP ON CACHE BOOL "" FORCE) #libgit2
+endif()
+
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE) 
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)        
 set(BUILD_CLI OFF CACHE BOOL "" FORCE)        
@@ -31,7 +45,11 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 add_compile_options(
   #-Wall 
   #-Wextra 
-  -ggdb)
+  )
+
+if(NOT MSVC)
+  add_compile_options(-ggdb)
+endif()
 
 # exec
 
@@ -47,7 +65,6 @@ add_subdirectory(deps/pcre2)
 add_subdirectory(deps/tree-sitter)
 add_subdirectory(deps/lua-5.5.0)
 add_subdirectory(deps/LuaBridge)
-
 
 add_dependencies(
     copyPasta
@@ -82,10 +99,23 @@ target_link_libraries(
   Threads::Threads
 )
 
+if(WIN32)
+    target_link_libraries(copyPasta PUBLIC
+        winhttp
+        rpcrt4
+        crypt32
+        ole32
+        ws2_32
+    )
+endif()
+
 # Post
 
 message(STATUS "Project: ${PROJECT_NAME} v${PROJECT_VERSION}")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+if(MSVC)
+  message(STATUS "MSVC runtime: ${CMAKE_MSVC_RUNTIME_LIBRARY}")
+endif()
 
 # build for windows - 
 # sudo apt install mingw-w64
