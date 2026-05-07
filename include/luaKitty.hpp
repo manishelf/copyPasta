@@ -499,7 +499,12 @@ void LuaExecutor::bindWalk(){
         }
       }
     }
-
+ 
+    if (opts["ignore"].isTable()) {
+      for (auto it : pairs(opts["ignore"])) {
+        walker.ignore.insert(it.second.cast<std::string>());
+      }
+    }
     
     std::vector<LuaRef> hits;
     std::mutex hitMutex;
