@@ -40,6 +40,8 @@ set(PCRE2_SUPPORT_JIT ON CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE) 
 set(TREE_SITTER_BUILD_TESTS OFF CACHE BOOL "" FORCE) 
 
+set(LINK_STATIC_TS_PARSER_LIBS OFF)
+
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_compile_options(
@@ -74,6 +76,23 @@ add_dependencies(
     lua
 )
 
+if(LINK_STATIC_TS_PARSER_LIBS)
+  add_library(TS_PARSER_LIB STATIC IMPORTED)
+  # get the binaries from https://github.com/casualjim/breeze-tree-sitter-parsers
+  if(WIN32)
+      set_target_properties(TS_PARSER_LIB PROPERTIES
+        IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/deps/libtree-sitter-parsers-all-windows-x86_64/libtree-sitter-parsers-all-windows-x86_64.a
+        IMPORTED_LINK_INTERFACE_LANGUAGES "C"
+      )
+  else()
+      # this requires the entire app binary to be compiled with glibc clang/clang++
+      set_target_properties(TS_PARSER_LIB PROPERTIES
+        IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/deps/libtree-sitter-parsers-all-linux-x86_64-glibc/libtree-sitter-parsers-all-linux-x86_64-glibc.a
+        IMPORTED_LINK_INTERFACE_LANGUAGES "C"
+      )
+  endif()
+endif()
+
 find_package(Threads REQUIRED)
 
 # include
@@ -98,6 +117,22 @@ target_link_libraries(
   lua
   Threads::Threads
 )
+
+if(LINK_STATIC_TS_PARSER_LIBS)
+    if(MSVC)
+      target_link_libraries(copyPasta
+            PUBLIC 
+            "/WHOLEARCHIVE:$<TARGET_FILE:TS_PARSER_LIB>"
+      )
+    else()
+      target_link_libraries(copyPasta
+            PUBLIC
+            "-Wl,--whole-archive"
+            $<TARGET_FILE:TS_PARSER_LIB>
+            "-Wl,--no-whole-archive" 
+      )
+    endif()
+endif()
 
 if(WIN32)
     target_link_libraries(copyPasta PUBLIC
