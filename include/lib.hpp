@@ -365,7 +365,7 @@ public:
   OP(OP_WRITE_TO)                                                                 \
   OP(OP_SAVE)                                                                     \
   OP(OP_SAVE_VALID_ONLY)                                                          \
-  OP(OP_PRINT_PATH)                                                            \
+  OP(OP_PRINT_PATH)                                                               \
   OP(OP_PRINT_ERRORS)                                                             \
   OP(OP_VALIDATE_CST)                                                             \
   OP(OP_PRINT_CHANGE_AFTER)                                                       \
@@ -2919,14 +2919,16 @@ LibGit::LibGit(const LibGit& other) {
   root = other.root;
   username = other.username;
   email = other.email;
-  signature = other.signature;
+  setSignature(username, email);
   LibGit temp = LibGit::open(other.root);
   repo = std::move(temp.repo);
 }
 
 LibGit::~LibGit(){
   DEBUG_FULL("LibGit destroyed");
-  git_signature_free(signature);
+  if(signature){
+    git_signature_free(signature);
+  }
 }
 
 LibGit::RepoPtr LibGit::make_repo(git_repository *raw){
