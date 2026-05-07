@@ -40,7 +40,7 @@ set(PCRE2_SUPPORT_JIT ON CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE) 
 set(TREE_SITTER_BUILD_TESTS OFF CACHE BOOL "" FORCE) 
 
-set(LINK_STATIC_TS_PARSER_LIBS OFF)
+set(LINK_STATIC_TS_PARSER_LIBS ON)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -90,6 +90,10 @@ if(LINK_STATIC_TS_PARSER_LIBS)
         IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/deps/libtree-sitter-parsers-all-linux-x86_64-glibc/libtree-sitter-parsers-all-linux-x86_64-glibc.a
         IMPORTED_LINK_INTERFACE_LANGUAGES "C"
       )
+  endif()
+  if(UNIX AND NOT APPLE)
+    target_compile_options(copyPasta PUBLIC -stdlib=libc++)
+    target_link_options(copyPasta PUBLIC -stdlib=libc++)
   endif()
 endif()
 

@@ -806,7 +806,7 @@ void LuaExecutor::bindHelpers() {
         int i = 1;
         LKHelpers::luaTableIter(L, t, [&i, &result](const std::string& path, const std::string& value,
                                               int depth) {
-          if(depth = 0)
+          if(depth == 0)
           result[i++] = path;
         });
 
@@ -822,7 +822,7 @@ void LuaExecutor::bindHelpers() {
         LKHelpers::luaTableIter(L, t, [&i, &result](const std::string& path, const std::string& value,
                                               int depth) {
 
-          if(depth = 0)
+          if(depth == 0)
           result[i++] = value;
         });
 
