@@ -200,11 +200,11 @@ namespace copypasta{
         match["path"] = r->getFile().pathStr;
         match["text"] = std::string(sv.data(), sv.size());
         LuaRef captures = newTable(L);
-        for(int i = 0; i< hit.captures.size(); i++){
-          LuaRef capture = LKHelpers::rangeToCap(L, hit.captures[i]); // Lua is 1 based;
-          auto sv = r->get(hit.captures[i].start_byte, hit.captures[i].end_byte);
+        for(size_t j = 0; j < hit.captures.size(); j++){
+          LuaRef capture = LKHelpers::rangeToCap(L, hit.captures[j]); // Lua is 1 based;
+          auto sv = r->get(hit.captures[j].start_byte, hit.captures[j].end_byte);
           capture["text"] = std::string(sv.data(), sv.size());
-          captures[i+1] = capture;
+          captures[j+1] = capture;
         }
         match["captures"] = captures;
         table[i + 1] = match; // Lua is 1 based
@@ -421,7 +421,7 @@ namespace copypasta{
         })
 
         .addFunction("find", +[](FileReader* r, const std::string& pattern, bool regex, lua_State* L) {
-          auto results = r->find(pattern, regex);
+          auto results = r->find(pattern, regex, PCRE2_MULTILINE);
           return LKHelpers::matchToCap(L, r, results);
         })
       .endClass()
@@ -431,7 +431,7 @@ namespace copypasta{
       .addFunction("readSnap", +[](const std::string& cont) {
          FileSnapshot s;
          s.cont = cont;
-         return FileReader(cont);
+         return FileReader(s);
       })
       .beginNamespace("frCache")
         .addFunction("getLine", +[](const std::string& path, int row) -> std::string {
@@ -742,7 +742,7 @@ namespace copypasta{
       .addFunction("writeTo", +[](FileEditor* ed, const std::string& path) {
         ed->queue({ FileEditor::OP_WRITE_TO, TSRange{}, path, "" });
       })
-      .addFunction("queueSave", +[](FileEditor* ed, const std::string& path) {
+      .addFunction("queueSave", +[](FileEditor* ed) {
         ed->queue({ FileEditor::OP_SAVE });
       })
       .addFunction("getErrors", +[](FileEditor* ed, lua_State* L) -> luabridge::LuaRef {
@@ -798,8 +798,6 @@ namespace copypasta{
         })
         .addFunction("setSignature", &LibGit::setSignature)
         .addFunction("branchExists", &LibGit::branchExists)
-
-        .addFunction("branchCreate", &LibGit::branchCreate)
         .addFunction("branchCreate", &LibGit::branchCreate)
         .addFunction("checkout", +[](LibGit* g, const std::string blobId){
           g->checkout(blobId);
