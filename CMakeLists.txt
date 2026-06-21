@@ -2,24 +2,9 @@ cmake_minimum_required(VERSION 3.10)
 
 project(copyPasta VERSION 1.0 LANGUAGES C CXX)
 
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# for windows /MD instead of /MT 
-set(STATIC_CRT OFF CACHE BOOL "" FORCE) #libgit2
-cmake_policy(SET CMP0091 NEW)
-
-if(MSVC)
-  # force /MD
-  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
-      CACHE STRING "" FORCE)
-
-  # disable MD warnings for depricated things
-  add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
-  set(USE_WINHTTP ON CACHE BOOL "" FORCE) #libgit2
-endif()
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE) 
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)        
@@ -37,20 +22,40 @@ set(USE_REGEX OFF CACHE BOOL "" FORCE) # for libgit2
 
 set(PCRE2_SUPPORT_JIT ON CACHE BOOL "" FORCE) 
 
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE) 
 set(TREE_SITTER_BUILD_TESTS OFF CACHE BOOL "" FORCE) 
 
-set(LINK_STATIC_TS_PARSER_LIBS ON)
+set(LINK_STATIC_TS_PARSER_LIBS OFF)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-add_compile_options(
-  #-Wall 
-  #-Wextra 
-  )
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
-if(NOT MSVC)
-  add_compile_options(-ggdb)
+if(MSVC)
+  # for windows /MD instead of /MT 
+  set(STATIC_CRT OFF CACHE BOOL "" FORCE) #libgit2
+  cmake_policy(SET CMP0091 NEW)
+  # force /MD
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message("MSVC Debug build")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" CACHE STRING "" FORCE)
+  else()
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "" FORCE)
+  endif()
+  # disable MD warnings for depricated things
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+  set(USE_WINHTTP ON CACHE BOOL "" FORCE) #libgit2
+endif()
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    if(NOT MSVC)
+        add_compile_options(
+            -Wall 
+            -Wextra 
+            -ggdb
+        )
+    endif()
 endif()
 
 # exec
@@ -98,7 +103,7 @@ if(LINK_STATIC_TS_PARSER_LIBS)
         IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/deps/libtree-sitter-parsers-all-linux-x86_64-glibc/libtree-sitter-parsers-all-linux-x86_64-glibc.a
         IMPORTED_LINK_INTERFACE_LANGUAGES "C"
       )
-      if(UNIX AND NOT APPLE)
+      if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         target_compile_options(copyPasta PUBLIC -stdlib=libc++)
         target_link_options(copyPasta PUBLIC -stdlib=libc++)
       endif()
@@ -170,3 +175,4 @@ endif()
 #   -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
 #   -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++
 # prefer cmake .. -DCMAKE_TOOLCHAIN_FILE=../mingw-toolchain.cmake
+# build using cmake --build . --config Release 

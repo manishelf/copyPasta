@@ -1,7 +1,7 @@
 path = "/home/ManishDeb/crm-soap/"
 
 local java = loadLanguage("java")
-Helpers.Table.print(java.getNodeTypes())
+Helper.Table.print(java:getNodeTypes())
 -- print("staticCastHandling")
 -- -- Logger.level = 2
 -- 

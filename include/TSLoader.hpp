@@ -4,6 +4,8 @@
 #include <map>
 #include <string>
 #include <tree_sitter/api.h>
+#include <memory>
+#include <mutex>
 
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -72,6 +74,7 @@ class TSLang{
   const TSLanguage* lang;
   public:
   const std::string name;
+  TSLang():name("") {};
   TSLang(const TSLanguage* lang, const std::string& name);
   ~TSLang();
   const TSLanguage* getRaw(){ return lang; };
