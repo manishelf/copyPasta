@@ -23,6 +23,8 @@ class LibGit {
 
   using RepoPtr = std::shared_ptr<git_repository>;
   static RepoPtr make_repo(git_repository* repo);
+
+  bool isRepoValid = false;
  
   RepoPtr repo;
   std::string root;
@@ -42,6 +44,8 @@ public:
 
   LibGit(LibGit&& other); 
   LibGit(const LibGit& other);
+
+  bool isValid() { return isRepoValid; }
 
   static LibGit clone(std::string url, std::string path = ".", 
                       bool shallow = false, git_clone_options opts = GIT_CLONE_OPTIONS_INIT);

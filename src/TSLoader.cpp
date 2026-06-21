@@ -148,47 +148,45 @@ TSLangWrapper TSLoader::get(std::string lang){
       return DirWalker::STOP;
   }; 
 
-  try{
-    walker.walk(action);
-    if(tsLang.isValid()){
-      return tsLang;
-    }
-  }catch(std::runtime_error e){
-    std::string gitUrl = lookup[lang];
-    try{ 
-      LibGit::clone(gitUrl, repoPath, true);
-    }catch(std::runtime_error e){
-      LERROR(e.what());
-    }
-    // TODO: make this cross platform and portable
-    // or maybe make is fine?
-    std::string compileCommand =  (BUILD_CMD + repoPath);
-    INFO("Building lib with - " << compileCommand);
-    // TODO: maybe do this differetly as there may be code execution from the md file
-    int status = std::system(compileCommand.c_str());
+  walker.walk(action);
 
-    if (status != 0) {
-      LERROR("Unable to compile parser - " + compileCommand);
-    }
+  if (!tsLang.isValid()) {
 
-    walker.walk(action);
+      std::string gitUrl = lookup[lang];
+      try {
+          LibGit::clone(gitUrl, repoPath, true);
+      }
+      catch (std::runtime_error e) {
+          LERROR(e.what());
+      }
+      // TODO: make this cross platform and portable
+      // or maybe make is fine?
+      std::string compileCommand = (BUILD_CMD + repoPath);
+      INFO("Building lib with - " << compileCommand);
+      // TODO: maybe do this differetly as there may be code execution from the md file
+      int status = std::system(compileCommand.c_str());
 
-    if(!(tsLang.isValid())){
-      throw std::runtime_error("unable to load - "+lang);
-    }
+      if (status != 0) {
+          LERROR("Unable to compile parser - " + compileCommand);
+      }
 
-    INFO("Loaded TS Parser - " << lang);
-    DEBUG("abi - " << ts_language_abi_version(tsLang.getLang()->getRaw()));
-    auto name = ts_language_name(tsLang.getLang()->getRaw());
-    if(name){
-      DEBUG("name - "+std::string(name));
-    }else{
-      DEBUG("lib may have abi < LANGUAGE_VERSION_WITH_RESERVED_WORDS");
-    }
-    return tsLang; 
+      walker.walk(action);
 
+      if (!(tsLang.isValid())) {
+          throw std::runtime_error("unable to load - " + lang);
+      }
   }
-  throw std::runtime_error("Unable to load TS parser - " + lang + " from " + walker.path);
+
+  INFO("Loaded TS Parser - " << lang);
+  DEBUG("abi - " << ts_language_abi_version(tsLang.getLang()->getRaw()));
+  auto name = ts_language_name(tsLang.getLang()->getRaw());
+  if(name){
+    DEBUG("name - "+std::string(name));
+  }else{
+    DEBUG("lib may have abi < LANGUAGE_VERSION_WITH_RESERVED_WORDS");
+  }
+
+  return tsLang;
 }
 
 } // namespace copypasta

@@ -20,10 +20,15 @@ namespace copypasta {
             });
     }
 
+    LibGit::LibGit() {
+        isRepoValid = false;
+    }
+
     LibGit::LibGit(git_repository* repo) {
         assert(repo != nullptr);
         DEBUG_FULL("LibGit ctor");
         init();
+        isRepoValid = true;
         this->repo = make_repo(repo);
         root = git_repository_workdir(repo);
         setSignature(username, email);
@@ -37,6 +42,8 @@ namespace copypasta {
         // mutex is default-constructed fresh — cannot be moved
     {
         DEBUG_FULL("LibGit move ctor");
+        isRepoValid = true;
+        other.isRepoValid = false;
         other.signature = nullptr;
     }
 
@@ -48,6 +55,7 @@ namespace copypasta {
         setSignature(username, email);
         LibGit temp = LibGit::open(other.root);
         repo = std::move(temp.repo);
+        isRepoValid = other.isRepoValid;
     }
 
     LibGit::~LibGit() {
@@ -76,8 +84,11 @@ namespace copypasta {
 
         if (git_clone(&repo, url.c_str(), path.c_str(), &opts) < 0) {
             auto e = git_error_last();
-            throw std::runtime_error(std::string("Unable to clone repository at " + url + " due to :") +
+            auto repo = LibGit();
+            return repo;
+            /*throw std::runtime_error(std::string("Unable to clone repository at " + url + " due to :") +
                 ((e && e->message) ? e->message : "Unknown"));
+            */
         }
         DEBUG("LibGit clone done");
         return LibGit(repo);
@@ -89,9 +100,11 @@ namespace copypasta {
         DEBUG("LibGit open start");
         if (git_repository_open(&repo, path.c_str()) < 0) {
             const git_error* e = git_error_last();
-
-            throw std::runtime_error(std::string("Unable to open repository at " + path + " due to : ") +
+            auto repo = LibGit();
+            return repo;
+            /*throw std::runtime_error(std::string("Unable to open repository at " + path + " due to : ") +
                 (e && e->message ? e->message : "Unknown"));
+            */
         }
 
         DEBUG("LibGit open done");
@@ -120,6 +133,7 @@ namespace copypasta {
 
     bool LibGit::isPathIgnored(const std::string& path) {
         DEBUG_FULL("LibGit isPathIgnored");
+        if (!isRepoValid) return false;
         int ignored;
         if (git_ignore_path_is_ignored(&ignored, repo.get(), path.c_str()) < 0) {
             return false;
@@ -134,6 +148,10 @@ namespace copypasta {
 
     void LibGit::add(const fs::path& path) {
         git_index* index = nullptr;
+
+        if (!isRepoValid) {
+            throw std::runtime_error("This is not a valid Git repo, unable to add");
+        }
 
         fs::path relPath = fs::relative(path, root);
 
@@ -154,6 +172,9 @@ namespace copypasta {
     };
 
     void LibGit::addAll() {
+        if (!isRepoValid) {
+            throw std::runtime_error("This is not a valid Git repo, unable to addAll");
+        }
         DEBUG("LibGit add all - " << root);
 
         std::lock_guard<std::mutex> lock(gitMutex);
@@ -168,10 +189,16 @@ namespace copypasta {
     }
 
     void LibGit::addIgnoreRule(const std::string& rule) {
+        if (!isRepoValid) {
+            throw std::runtime_error("This is not a valid Git repo, unable to addIgnoreRule");
+        }
         git_ignore_add_rule(repo.get(), rule.c_str());
     }
 
     void LibGit::checkout(const std::string& blobId, git_checkout_options opts) {
+        if (!isRepoValid) {
+            throw std::runtime_error("This is not a valid Git repo, unable to Checkout");
+        }
         DEBUG("LibGit checkout - " << blobId);
 
         std::lock_guard<std::mutex> lock(gitMutex);
@@ -207,6 +234,9 @@ namespace copypasta {
     }
 
     bool LibGit::branchExists(const std::string& name) {
+        if (!isRepoValid) {
+            false;
+        }
         git_reference* ref = nullptr;
         bool exists = git_reference_dwim(&ref, repo.get(), name.c_str()) == 0;
         if (ref) {
@@ -216,6 +246,9 @@ namespace copypasta {
     }
 
     void LibGit::branchCreate(const std::string& name) {
+        if (!isRepoValid) {
+            throw std::runtime_error("This is not a valid Git repo, unable to createBranch");
+        }
         DEBUG("LibGit branchCreate - " << name);
         std::lock_guard<std::mutex> lock(gitMutex);
         git_reference* ref = nullptr;
@@ -249,7 +282,9 @@ namespace copypasta {
     void LibGit::commit(std::string message) {
         git_index* index = nullptr;
         int err = 0;
-
+        if (!isRepoValid) {
+            throw std::runtime_error("This is not a valid Git repo, unable to commit");
+        }
         std::lock_guard<std::mutex> lock(gitMutex);
 
         err = git_repository_index(&index, repo.get());
@@ -278,6 +313,9 @@ namespace copypasta {
     }
 
     void LibGit::resetHead(git_reset_t opt) {
+        if (!isRepoValid) {
+            throw std::runtime_error("This is not a valid Git repo, unable to resetHead");
+        }
         DEBUG("LibGit reset HEAD - " << opt);
         git_object* target = NULL;
         int err;
@@ -301,6 +339,9 @@ namespace copypasta {
 
     std::vector<LibGit::FileDiff> LibGit::diff(std::string fromBlobId, std::string toBlobId,
         git_diff_options opts) {
+        if (!isRepoValid) {
+            throw std::runtime_error("This is not a valid Git repo, unable to diff");
+        }
         DEBUG("LibGit diff " << fromBlobId << toBlobId);
         std::vector<FileDiff> result;
 
