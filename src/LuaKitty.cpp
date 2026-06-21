@@ -432,8 +432,34 @@ namespace copypasta{
          FileSnapshot s;
          s.cont = cont;
          return FileReader(cont);
-      });
-  }
+      })
+      .beginNamespace("frCache")
+        .addFunction("getLine", +[](const std::string& path, int row) -> std::string {
+          auto r = FileReaderCache::global().get(path);
+          if (!r->isValid()) return "";
+          auto sv = r->getLine(static_cast<size_t>(row));
+          return std::string(sv);
+        })
+        .addFunction("get", +[](const std::string& path) -> std::string {
+          auto r = FileReaderCache::global().get(path);
+          if (!r->isValid()) return "";
+          auto sv = r->get();
+          return std::string(sv);
+        })
+        .addFunction("updateAndGet", +[](const std::string& path) -> std::string {
+          auto r = FileReaderCache::global().updateAndGet(path);
+          if (!r->isValid()) return "";
+          auto sv = r->get();
+          return std::string(sv);
+        })
+        .addFunction("invalidate", +[](const std::string& path) {
+          FileReaderCache::global().invalidate(path);
+        })
+        .addFunction("clear", +[]() {
+          FileReaderCache::global().clear();
+        })
+      .endNamespace();
+  }  
 
   void LuaExecutor::bindWriter(){
 

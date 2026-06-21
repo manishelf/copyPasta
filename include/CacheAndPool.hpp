@@ -119,6 +119,26 @@ public:
   }
 };
 
+
+class FileReaderCache {
+  std::unordered_map<std::string, std::shared_ptr<FileReader>> cache;
+  std::mutex mtx;  
+
+  FileReaderCache() = default;
+
+public:
+  static FileReaderCache& global() {
+    static FileReaderCache instance;
+    return instance;
+  }
+
+  std::shared_ptr<FileReader> get(const std::string& path);
+  std::shared_ptr<FileReader> updateAndGet(const std::string& path);
+  void invalidate(const std::string& path);
+  void clear();
+
+};
+
 } // namespace copypasta
 
 #endif // CACHE_AND_POOL_HPP

@@ -135,4 +135,39 @@ namespace copypasta {
             worker.join(); // Wait for every thread to finish its current job
         }
     }
+
+    std::shared_ptr<FileReader> FileReaderCache::get(const std::string& path) {
+      std::string key = fs::absolute(fs::path(path).lexically_normal()).string();
+
+      std::lock_guard<std::mutex> lock(mtx);
+
+      auto it = cache.find(key);
+      if (it != cache.end()){
+        return it->second;
+      }
+
+      auto reader = std::make_shared<FileReader>(path);
+
+      if (reader->isValid()){
+        cache[key] = reader;
+      }
+
+      return reader;
+    }
+
+    std::shared_ptr<FileReader> FileReaderCache::updateAndGet(const std::string& path) {
+      invalidate(path);
+      return get(path);
+    }
+
+    void FileReaderCache::invalidate(const std::string& path) {
+      std::string key = fs::absolute(fs::path(path).lexically_normal()).string();
+      std::lock_guard<std::mutex> lock(mtx);
+      cache.erase(key);
+    }
+
+    void FileReaderCache::clear() {
+      std::lock_guard<std::mutex> lock(mtx);
+      cache.clear();
+    }
 } // copypasta
