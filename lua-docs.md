@@ -83,11 +83,11 @@ walk(path: string, opts: table, callback: function)
 
 | Key                  | Type            | Meaning                                              |
 |----------------------|-----------------|------------------------------------------------------|
-| `recursive`          | bool            | Descend into subdirectories.                         |
+| `notRecursive`       | bool            | Do not Descend into subdirectories.                  |
 | `inverted`           | bool            | Invert the matching behavior.                        |
-| `filesOnly`          | bool            | Only deliver regular files to the callback.          |
+| `notFilesOnly`       | bool            | Do not Only deliver regular files to the callback.   |
 | `doNotObeyGitIgnore` | bool            | If true, ignore `.gitignore` rules.                  |
-| `usePool`            | bool            | Use a thread pool (reserved).                         |
+| `usePool`            | bool            | Use a thread pool (reserved).                        |
 | `ext`                | array of string | Extension allowlist, e.g. `{".java", ".cpp"}`.       |
 | `ignore`             | array of string | Glob patterns to skip, e.g. `{"**/api/**"}`.         |
 
@@ -570,7 +570,7 @@ Git:checkout(branch)
 walk(path,
   { ext = { ".java" },
     ignore = { "**/hibernate/**", "**/datatypes/**", "**/api/**" },
-    recursive = true, filesOnly = true },
+  },
   function(file, git)
     print(file.path)
     if file.path == "" then return end
@@ -646,7 +646,7 @@ end
 
 ```lua
 walk("/project",
-  { ext = { ".cpp", ".hpp" }, recursive = true, filesOnly = true },
+  { ext = { ".cpp", ".hpp" }, notRecursive = true, notFilesOnly = false },
   function(file, git)
     if Helper.String.contains(file.path, "/third_party/") then
       return 3  -- SKIP
@@ -724,8 +724,8 @@ output) so the walker never even stats them.
 walk(path, {
   ext       = { ".java" },
   ignore    = { "**/target/**", "**/generated/**", "**/test/**" },
-  recursive = true,
-  filesOnly = true,
+  notRecursive = false,
+  notFilesOnly = false,
 }, function(file, git)
   -- only real source files reach here
 end)
@@ -934,7 +934,7 @@ local changed = 0
 walk(path,
   { ext = { ".java" },
     ignore = { "**/hibernate/**", "**/datatypes/**", "**/api/**", "**/test/**" },
-    recursive = true, filesOnly = true },
+    notRecursive = false, notFilesOnly = false },
   function(file, git)
     if file.path == "" then return end
 
@@ -992,7 +992,7 @@ local FIRST_TYPE = [[
     . [(class_declaration) (interface_declaration) (enum_declaration)] @type)
 ]]
 
-walk(path, { ext = { ".java" }, recursive = true, filesOnly = true },
+walk(path, { ext = { ".java" }, notRecursive = false, notFilesOnly = false },
   function(file, git)
     local src = frCache.get(file.path)
     if Helper.String.contains(src, "Copyright (c) 2026 Cerillion") then
@@ -1041,7 +1041,7 @@ local SURFACE = [[
 
 local docs = { "# API Surface\n" }
 
-walk(path, { ext = { ".hpp", ".h" }, recursive = true, filesOnly = true },
+walk(path, { ext = { ".hpp", ".h" }, notRecursive = false, notFilesOnly = not },
   function(file, git)
     local tree = cpp:parseFile(file.path)
     local current = nil
@@ -1088,7 +1088,7 @@ local branch = "refactor/rename-" .. OLD
 if not Git:branchExists(branch) then Git:branchCreate(branch) end
 Git:checkout(branch)
 
-walk(path, { ext = { ".java" }, recursive = true, filesOnly = true },
+walk(path, { ext = { ".java" } },
   function(file, git)
     local tree = java:parseFile(file.path)
     local w    = write(file.path)
@@ -1136,7 +1136,7 @@ local EMPTY_CATCH = [[
 
 local violations = 0
 
-walk(path, { ext = { ".java" }, recursive = true, filesOnly = true },
+walk(path, { ext = { ".java" } },
   function(file, git)
     local tree = java:parseFile(file.path)
     local w    = write(file.path)
