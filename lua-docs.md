@@ -562,6 +562,7 @@ local wrappers = {
 path = io.read()
 
 local Git = gitOpen(path)
+if not Git.isValid then print("Unable to load Git repo") return end
 Git:resetHead()
 local branch = "test-b-1"
 if not Git:branchExists(branch) then Git:branchCreate(branch) end
