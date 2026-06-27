@@ -1,4 +1,5 @@
 #include <LuaKitty.hpp>
+#include <cstring>
 
 using namespace std;
 using namespace copypasta;
@@ -10,7 +11,7 @@ int main(int argc, char** argv){
   }
   LuaExecutor exec;
   exec.addArgs(argc, argv);
-  if (strcmp(argv[1], "--watch") == 0 && argc > 2) {
+  if (strcmp(argv[1], "-w") == 0 && argc > 2) {
       exec.watchAndExecThreaded(argv[2]);
       exec.joinWatcher();
   }
