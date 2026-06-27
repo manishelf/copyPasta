@@ -433,30 +433,29 @@ namespace copypasta{
          s.cont = cont;
          return FileReader(s);
       })
-      .beginNamespace("frCache")
-        .addFunction("getLine", +[](const std::string& path, int row) -> std::string {
-          auto r = FileReaderCache::global().get(path);
-          if (!r->isValid()) return "";
-          auto sv = r->getLine(static_cast<size_t>(row));
+      .beginNamespace("snapCache")
+        .addFunction("getLine", +[](const std::string& path, size_t row) -> std::string {
+          auto s = FileSnapCache::global().get(path);
+          FileSnapshot fs;
+          fs.cont = s->cont;
+          fs.rowOffsets = s->rowOffsets;
+          FileReader fr(fs);
+          auto sv = fr.getLine(row);
           return std::string(sv);
         })
         .addFunction("get", +[](const std::string& path) -> std::string {
-          auto r = FileReaderCache::global().get(path);
-          if (!r->isValid()) return "";
-          auto sv = r->get();
-          return std::string(sv);
+          auto s = FileSnapCache::global().get(path);
+          return s->cont;
         })
         .addFunction("updateAndGet", +[](const std::string& path) -> std::string {
-          auto r = FileReaderCache::global().updateAndGet(path);
-          if (!r->isValid()) return "";
-          auto sv = r->get();
-          return std::string(sv);
+          auto s = FileSnapCache::global().updateAndGet(path);
+          return s->cont;
         })
         .addFunction("invalidate", +[](const std::string& path) {
-          FileReaderCache::global().invalidate(path);
+          FileSnapCache::global().invalidate(path);
         })
         .addFunction("clear", +[]() {
-          FileReaderCache::global().clear();
+          FileSnapCache::global().clear();
         })
       .endNamespace();
   }  
@@ -501,9 +500,9 @@ namespace copypasta{
 
     ns.addFunction("walk", +[](const std::string& path, LuaRef opts, LuaRef callback) {
       DirWalker walker(path);
-      walker.recursive = opts["recursive"].cast<bool>();
+      walker.recursive = !opts["notRecursive"].cast<bool>();
       walker.inverted = opts["inverted"].cast<bool>();
-      walker.filesOnly = opts["filesOnly"].cast<bool>();
+      walker.filesOnly = !opts["notFilesOnly"].cast<bool>();
       walker.obeyGitIgnore = !opts["doNotObeyGitIgnore"].cast<bool>();
 
       
@@ -538,6 +537,7 @@ namespace copypasta{
       DirWalker walker(path);
       walker.recursive = true;
       walker.filesOnly = true;
+      walker.useCache = true;
       
       if (opts.isTable()) {
         if (opts["ext"].isTable()) {
@@ -556,17 +556,25 @@ namespace copypasta{
       std::vector<LuaRef> hits;
       std::mutex hitMutex;
       ThreadPool pool;
-
+      
       walker.walk(pool, [L, &hitMutex, &hits, &pattern](DirWalker::STATUS status, File file, LibGit&) {
         if (status == DirWalker::QUEUING) return DirWalker::CONTINUE;
-        FileReader reader(file);
+        FileSnapshot* fr = FileSnapCache::global().get(file.pathStr).get();
+        FileSnapshot fs;
+        fs.cont = fr->cont;
+        fs.file = fr->file;
+        fs.lastModified = fr->lastModified;
+        fs.dirty = fr->dirty;
+        fs.rowOffsets = fr->rowOffsets;
+        FileReader reader(fs);
+        //FileReader reader(file.pathStr);
         auto results = reader.find(pattern, true, PCRE2_MULTILINE);
         if (!results.empty()) {
           std::lock_guard<std::mutex> lock(hitMutex);
           auto res = LKHelpers::matchToCap(L, &reader, results);
           hits.push_back(res);
         }
-
+        std::cout << "..*";
         return DirWalker::CONTINUE;
       });
       
@@ -784,6 +792,7 @@ namespace copypasta{
     Namespace ns = getGlobalNamespace(L);
 
     ns.beginClass<LibGit>("Git")
+        .addFunction("isValid", &LibGit::isValid)
         .addFunction("isIgnored", +[](LibGit* g, const std::string& pathStr){
           return g->isPathIgnored(pathStr);
         })
@@ -1008,6 +1017,12 @@ namespace copypasta{
         return std::string(s.rbegin(), s.rend());
       })
       .endNamespace() // String
+      .beginNamespace("Cmd")
+        .addFunction("cls", +[]() {
+          std::cout << "\x1B[2J\x1B[H";
+        })
+      .endNamespace() // Cmd
+
     .endNamespace(); // Helper
   }
 } // namespace copypasta

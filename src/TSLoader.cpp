@@ -10,6 +10,8 @@
 #include <DirWalker.hpp>
 #include <Logger.hpp>
 #include <ListOfParsers.hpp>
+#include <stdlib.h>
+#include <algorithm>
 
 namespace copypasta {
 
@@ -61,13 +63,15 @@ TSLoader::TSLoader(){
       std::string langName = std::string(reader.get(langP.start_byte, langP.end_byte));
       std::string gitUrl = std::string(reader.get(urlP.start_byte, urlP.end_byte));
       lookup[langName] = gitUrl;
-      DEBUG("Loader lib available - " << langName << " from "+gitUrl);
+      DEBUG_FULL("Loader lib available - " << langName << " from "+gitUrl);
     }
   });
   DEBUG("loader init done");
 }
 
 TSLangWrapper TSLoader::loadTSLangFromSelf(std::string lang){
+    
+    std::replace(lang.begin(), lang.end(), '-', '_');
     std::string symbol = "tree_sitter_" + lang;
     
     //already Loaded or statically included
@@ -88,6 +92,7 @@ TSLangWrapper TSLoader::loadTSLangFromSelf(std::string lang){
 
 TSLangWrapper TSLoader::loadTSLangFromExtern(std::string libPath, std::string lang)
 {
+    std::replace(lang.begin(), lang.end(), '-', '_');
     std::string symbol = "tree_sitter_" + lang;
 
     // load external lib  
@@ -110,7 +115,14 @@ TSLangWrapper TSLoader::loadTSLangFromExtern(std::string libPath, std::string la
 
 TSLangWrapper TSLoader::get(std::string lang){
 
-  std::string repoPath = std::string(PARSER_PATH)+"/tree-sitter-"+lang;
+  const char* parser_path = getenv("COPYPASTA_PARSER_PATH");
+
+  if (!parser_path) {
+    INFO("env var COPYPASTA_PARSER_PATH not set using default dir");
+    parser_path = PARSER_PATH;
+  }
+
+  std::string repoPath = std::string(parser_path)+"/tree-sitter-"+lang;
 
   DEBUG("Loader get - " << lang);
   TSLangWrapper tsLang  = loadTSLangFromSelf(lang);
@@ -125,6 +137,7 @@ TSLangWrapper TSLoader::get(std::string lang){
   walker.matchExt = libExt;
   walker.recursive = true;
   walker.obeyGitIgnore = false;
+  walker.useCache = true;
 
   auto action =[&libExt, &tsLang, lang](DirWalker::STATUS status, File file){
 

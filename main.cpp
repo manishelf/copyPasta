@@ -10,8 +10,13 @@ int main(int argc, char** argv){
   }
   LuaExecutor exec;
   exec.addArgs(argc, argv);
-  exec.watchAndExecThreaded(argv[1]);
-  exec.joinWatcher();
+  if (strcmp(argv[1], "--watch") == 0 && argc > 2) {
+      exec.watchAndExecThreaded(argv[2]);
+      exec.joinWatcher();
+  }
+  else {
+      exec.exec(argv[1], true);
+  }
   return 0;
 }
 

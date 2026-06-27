@@ -8,24 +8,28 @@
 namespace copypasta {
 
     void File::loadFromEntry() {
-        if (dir_entry.exists()) {
+        std::error_code ec;
+        status = dir_entry.status(ec);
+
+        if (!ec) {
             DEBUG_FULL("File loadFromEntry");
+            // TODO: this might be too expensive
             path = fs::absolute(dir_entry.path().lexically_normal());
-            name = path.filename().string();
-            ext = path.extension().string();
-            status = dir_entry.status();
-            isDir = fs::is_directory(status);
-            isReg = fs::is_regular_file(status);
-            if (isReg) {
-                size = dir_entry.file_size();
-            }
-            else {
-                size = 0;
-            }
+
+            const auto filename = path.filename();
+            name = filename.string();
+            ext = filename.extension().string();
+            
+            isDir = status.type() == fs::file_type::directory;
+            isReg = status.type() == fs::file_type::regular;
+
+            // TODO: this might be too expensive
+            size = isReg ? dir_entry.file_size(ec) : 0;
+
             isValid = true;
         }
         else {
-            LERROR("File is invalid - " << dir_entry.path().string());
+            LERROR("File is invalid - " << dir_entry.path().string() << " error: " << ec.value() << ": " << ec.message());
             isValid = false;
         }
     }
@@ -136,7 +140,8 @@ namespace copypasta {
         file = snap.file;
         this->blockSize = blockSize;
         _isValid = true;
-        rowOffsetsValid = false;
+        rowOffsetsValid = !snap.rowOffsets.empty();
+        rowOffsets = snap.rowOffsets;
     };
 
     FileReader::FileReader(const FileReader& copy) {
@@ -525,7 +530,9 @@ namespace copypasta {
         }
         RESTORE_ITER_INFO;
 
+        UPDATE_ROW_OFFSETS(buf, bufSize);
         snap.cont = std::string(buf.data(), bufSize);
+        snap.rowOffsets = rowOffsets;
         return snap;
     }
 
@@ -621,8 +628,8 @@ namespace copypasta {
         this->snap = snap;
         file = snap.file;
         _isValid = file.isValid;
-        rowOffsetsValid = false;
-        UPDATE_ROW_OFFSETS(snap.cont, snap.cont.length());
+        rowOffsetsValid = !snap.rowOffsets.empty();
+        rowOffsets = snap.rowOffsets;
     };
 
     FileWriter::FileWriter(std::string path) {

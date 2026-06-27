@@ -23,6 +23,7 @@ public:
   bool includeDotDir = false;
   bool obeyGitIgnore = true;
   bool filesOnly = true;
+  bool useCache = false;
   std::set<std::string> ignore;
   std::set<std::string> matchExt;
 
@@ -98,6 +99,23 @@ public:
   void walk(ThreadPool &pool, Action &&action, Payload &payload = NULL);
 
 private:
+
+  std::shared_ptr<std::vector<fs::directory_entry>> DirWalker::getChildren() {
+    std::shared_ptr<std::vector<fs::directory_entry>> entries;
+    if (useCache) {
+      DEBUG("DirWalker walk with pool use cached path");
+      DirEntryCache& dirCache = DirEntryCache::global();
+      entries = dirCache.getCachedChildren(this->path);
+    }
+    else {
+      entries = std::make_shared<std::vector<fs::directory_entry>>(
+          fs::directory_iterator(this->path), // begin it
+          fs::directory_iterator() // end it
+      );
+    }
+    return entries;
+  }
+
   template <typename Payload, typename Action>
   STATUS walk(LibGit& repo, Action &&action, Payload &payload = NULL);
 
@@ -108,7 +126,6 @@ private:
 };
 
 // IMPL
-
 
 template <typename Action>
 DirWalker::STATUS DirWalker::walk(Action &&action) {
@@ -137,14 +154,12 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
     return FAILED;
 
   DEBUG_FULL("DirWalker walk begin - " << path);
-  std::vector<fs::directory_entry> entries(
-      fs::directory_iterator(this->path), // begin it
-      fs::directory_iterator()            // end it
-  );
 
-  for (size_t i = 0; i < entries.size(); i++) {
+  auto entries = getChildren();
+  
+  for (size_t i = 0; i < entries->size(); i++) {
 
-    auto entry = entries[i];
+    auto entry = entries->at(i);
     auto entryPath = entry.path();
 
     DEBUG_FULL("DirWalker walk with pool entry - " << entryPath);
@@ -161,7 +176,7 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
       continue;
     }
 
-    File file(entries[i]);
+    File file(entries->at(i));
     file.level = level;
 
   
@@ -200,7 +215,7 @@ DirWalker::STATUS DirWalker::walk(LibGit& repo, Action &&action,
 
     }
 
-    if (inverted && i == entries.size() - 1) {
+    if (inverted && i == entries->size() - 1) {
       fs::path parent = fs::absolute(path).parent_path();
       if (path == ".")
         parent = parent.parent_path();
@@ -249,12 +264,11 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
   }
 
   DEBUG("DirWalker walk with pool start - " << path);
-  std::vector<fs::directory_entry> entries(fs::directory_iterator(this->path),
-                                           fs::directory_iterator());
+  auto entries = getChildren();
 
-  for (int i = 0; i < entries.size(); i++) {
+  for (size_t i = 0; i < entries->size(); i++) {
 
-    auto entry = entries[i];
+    auto entry = entries->at(i);
     auto entryPath = entry.path();
 
     DEBUG_FULL("DirWalker walk with pool entry - " << entryPath);
@@ -276,7 +290,7 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
       continue;
     }
 
-    File file(entries[i]);
+    File file(entries->at(i));
     file.level = level;
 
     ACTION actRes;
@@ -306,7 +320,7 @@ void DirWalker::walk(LibGit& repo, ThreadPool &pool, Action &&action,
       child.copyConfig(this);
       child.level = level + 1;
       child.walk(repo, pool, action, abortSignal, payload);
-    } else if (inverted && i == entries.size() - 1) {
+    } else if (inverted && i == entries->size() - 1) {
       fs::path parent = fs::absolute(path).parent_path();
       if (path == ".")
         parent = parent.parent_path();

@@ -15,6 +15,7 @@
 
 #include <condition_variable>
 #include <atomic>
+#include <shared_mutex>
 
 namespace copypasta {
 
@@ -58,6 +59,11 @@ public:
     std::unique_lock<std::mutex> lock(finishMutex);
     finishCondition.wait(lock, [this] { return activeTasks.load() == 0; });
   }
+
+  static ThreadPool& global() {
+      static ThreadPool instance;
+      return instance;
+  }
 };
 
 // Thread-safe cache for compiled PCRE2 patterns.
@@ -73,7 +79,7 @@ class PcreCache {
     }
   };
   std::map<Key, pcre2_code *> cache;
-  mutable std::mutex mtx;
+  mutable std::shared_mutex mtx;
 
 public:
   PcreCache(){}
@@ -95,7 +101,7 @@ public:
 
 // Thread-safe pool for persistent TSEngine instances per language
 class TSEnginePool {
-  std::mutex mtx;
+  mutable std::shared_mutex mtx;
   std::map<const TSLanguage*, std::shared_ptr<TSEngine>> engines;
 public:
   std::shared_ptr<TSEngine> get(const TSLanguage* lang);
@@ -108,8 +114,8 @@ public:
 
 // Thread-safe query cache for reusing TSQuery* per engine and pattern
 class TSQueryCache {
-  std::mutex mtx;
-  std::map<std::pair<const TSEngine*, std::string>, TSQuery*> cache;
+   mutable std::shared_mutex mtx;
+   std::map<std::pair<const TSEngine*, std::string>, TSQuery*> cache;
 public:
   TSQuery* get(const TSEngine* engine, const std::string& pattern); 
   // thread safe
@@ -120,22 +126,40 @@ public:
 };
 
 
-class FileReaderCache {
-  std::unordered_map<std::string, std::shared_ptr<FileReader>> cache;
-  std::mutex mtx;  
-
-  FileReaderCache() = default;
+class FileSnapCache {
+  std::unordered_map<std::string, std::shared_ptr<FileSnapshot>> cache;
+  mutable std::shared_mutex mtx;
 
 public:
-  static FileReaderCache& global() {
-    static FileReaderCache instance;
+  static FileSnapCache& global() {
+    static FileSnapCache instance;
     return instance;
   }
 
-  std::shared_ptr<FileReader> get(const std::string& path);
-  std::shared_ptr<FileReader> updateAndGet(const std::string& path);
+  std::shared_ptr<FileSnapshot> get(const std::string& path);
+  std::shared_ptr<FileSnapshot> updateAndGet(const std::string& path);
   void invalidate(const std::string& path);
   void clear();
+
+};
+
+class DirEntryCache {
+    std::unordered_map<std::string, std::shared_ptr<std::vector<fs::directory_entry>>> cache;
+    mutable std::shared_mutex mtx;
+
+public:
+
+    std::shared_ptr<std::vector<fs::directory_entry>> getCachedChildren(const std::string& key);
+    void clear();
+
+    // thread safe
+    static DirEntryCache& global() {
+        static DirEntryCache instance;
+        return instance;
+    }
+};
+
+class FileMetaCache {
 
 };
 

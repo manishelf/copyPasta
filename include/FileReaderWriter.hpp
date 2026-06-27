@@ -48,6 +48,7 @@ public:
 
 struct FileSnapshot {
   std::string cont;
+  std::vector<size_t> rowOffsets;
   File file;
   size_t lastModified;
   bool dirty;

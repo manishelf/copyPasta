@@ -1,20 +1,25 @@
 #include <CacheAndPool.hpp>
 #include <Logger.hpp>
 #include <functional>
+#include <exception>
 
 namespace copypasta {
     // PcreCache 
     pcre2_code* PcreCache::get(const std::string& pattern, uint32_t opt_compile) {
         Key k{ pattern, opt_compile };
         {
-            DEBUG_FULL("PcreCache lock mtx");
-            std::lock_guard<std::mutex> lock(mtx);
+            DEBUG_FULL("PcreCache get read lock");
+            std::shared_lock<std::shared_mutex> lock(mtx);
             auto it = cache.find(k);
             if (it != cache.end()) {
                 DEBUG_FULL("PcreCache found from cache");
                 return it->second;
             }
         }
+
+        DEBUG_FULL("PcreCache get write lock");
+
+        std::unique_lock<std::shared_mutex> lock(mtx);
 
         DEBUG_FULL("PcreCache compile pattern - " << pattern);
         int errornumber;
@@ -46,22 +51,23 @@ namespace copypasta {
         }
         pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
         DEBUG_FULL("PcreCache compile pattern done - " << pattern);
-        std::lock_guard<std::mutex> lock(mtx);
         auto [it, _] = cache.emplace(k, re);
         return it->second;
     }
 
     //TSEnginePool (dont use with ThreadPool)
     std::shared_ptr<TSEngine> TSEnginePool::get(const TSLanguage* lang) {
-
-        DEBUG_FULL("TSEnginePool get lock mtx");
-        std::lock_guard<std::mutex> lock(mtx);
-        auto it = engines.find(lang);
-        if (it != engines.end()) {
-            DEBUG_FULL("TSEnginePool get found from cache");
-            return it->second;
+        {
+            DEBUG_FULL("TSEnginePool get read lock");
+            std::shared_lock<std::shared_mutex>  lock(mtx);
+            auto it = engines.find(lang);
+            if (it != engines.end()) {
+                DEBUG_FULL("TSEnginePool get found from cache");
+                return it->second;
+            }
         }
-
+        DEBUG_FULL("TSEnginePool get write lock");
+        std::unique_lock<std::shared_mutex>  lock(mtx);
         auto ptr = std::make_shared<TSEngine>(lang);
         engines[lang] = ptr;
         return ptr;
@@ -69,16 +75,18 @@ namespace copypasta {
 
     // TSQueryCache
     TSQuery* TSQueryCache::get(const TSEngine* engine, const std::string& pattern) {
-
-        DEBUG_FULL("TSQueryCache get lock mtx");
-        std::lock_guard<std::mutex> lock(mtx);
         auto key = std::make_pair(engine, pattern);
-        auto it = cache.find(key);
-        if (it != cache.end()) {
-            DEBUG_FULL("TSQueryCache found from cache");
-            return it->second;
+        {
+            DEBUG_FULL("TSQueryCache get read lock");
+            std::shared_lock<std::shared_mutex>  lock(mtx);
+            auto it = cache.find(key);
+            if (it != cache.end()) {
+                DEBUG_FULL("TSQueryCache found from cache");
+                return it->second;
+            }
         }
-
+        DEBUG_FULL("TSQueryCache get write lock");
+        std::unique_lock<std::shared_mutex>  lock(mtx);
         TSQuery* q = engine->queryNew(const_cast<std::string&>(pattern));
         cache[key] = q;
         return q;
@@ -112,7 +120,15 @@ namespace copypasta {
                         task.pop();
                     }
                     DEBUG("ThreadPool worker do job");
-                    job(); // Execute the action
+                    try {
+                        job(); // Execute the action
+                    }
+                    catch (const std::exception& e) {
+                        LERROR("Exception: " << e.what());
+                    }
+                    catch (...) {
+                        LERROR("Unknown exception during processing of job\n");
+                    }
                     DEBUG("ThreadPool worker job done");
                     if (activeTasks.fetch_sub(1) == 1) {
                         DEBUG("ThreadPool worker all jobs done");
@@ -136,38 +152,71 @@ namespace copypasta {
         }
     }
 
-    std::shared_ptr<FileReader> FileReaderCache::get(const std::string& path) {
+    std::shared_ptr<FileSnapshot> FileSnapCache::get(const std::string& path) {
       std::string key = fs::absolute(fs::path(path).lexically_normal()).string();
+      {
+          DEBUG_FULL("FileReaderCache get read lock");
+          std::shared_lock<std::shared_mutex>  lock(mtx);
 
-      std::lock_guard<std::mutex> lock(mtx);
-
-      auto it = cache.find(key);
-      if (it != cache.end()){
-        return it->second;
+          auto it = cache.find(key);
+          if (it != cache.end()) {
+              return it->second;
+          }
       }
 
-      auto reader = std::make_shared<FileReader>(path);
-
-      if (reader->isValid()){
-        cache[key] = reader;
-      }
-
-      return reader;
+      DEBUG_FULL("FileReaderCache get write lock");
+      std::unique_lock<std::shared_mutex>  lock(mtx);
+      FileReader fr(key);
+      auto snap = std::make_shared<FileSnapshot>(fr.isValid() ? fr.snapshot() : FileSnapshot{0});
+      cache[key] = snap;
+      return snap;
     }
 
-    std::shared_ptr<FileReader> FileReaderCache::updateAndGet(const std::string& path) {
+    std::shared_ptr<FileSnapshot> FileSnapCache::updateAndGet(const std::string& path) {
       invalidate(path);
       return get(path);
     }
 
-    void FileReaderCache::invalidate(const std::string& path) {
+    void FileSnapCache::invalidate(const std::string& path) {
       std::string key = fs::absolute(fs::path(path).lexically_normal()).string();
-      std::lock_guard<std::mutex> lock(mtx);
+      DEBUG_FULL("FileReaderCache invalidate " << key);
+      std::unique_lock<std::shared_mutex> lock(mtx);
       cache.erase(key);
     }
 
-    void FileReaderCache::clear() {
-      std::lock_guard<std::mutex> lock(mtx);
+    void FileSnapCache::clear() {
+      DEBUG_FULL("FileReaderCache clear");
+      std::unique_lock<std::shared_mutex> lock(mtx);
       cache.clear();
     }
+
+
+    std::shared_ptr<std::vector<fs::directory_entry>> DirEntryCache::getCachedChildren(const std::string& root) {
+        {
+            DEBUG_FULL("DirEntryCache get read lock");
+            std::shared_lock<std::shared_mutex>  lock(mtx);
+            auto it = cache.find(root);
+            if (it != cache.end()) {
+                return it->second;
+            }
+        }
+
+        DEBUG_FULL("DirEntryCache get write lock");
+        std::unique_lock<std::shared_mutex>  lock(mtx);
+        
+        auto children = std::make_shared<std::vector<fs::directory_entry>>(
+            fs::directory_iterator(root), // begin it
+            fs::directory_iterator() // // end it
+        );
+
+        cache[root] = children;
+        return children;
+    }
+
+    void DirEntryCache::clear() {
+        DEBUG_FULL("DirEntryCache clear");
+        std::unique_lock<std::shared_mutex>  lock(mtx);
+        cache.clear();
+    }
+
 } // copypasta

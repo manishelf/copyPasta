@@ -22,6 +22,7 @@ namespace copypasta {
 
     LibGit::LibGit() {
         isRepoValid = false;
+        signature = nullptr;
     }
 
     LibGit::LibGit(git_repository* repo) {
@@ -52,7 +53,6 @@ namespace copypasta {
         root = other.root;
         username = other.username;
         email = other.email;
-        setSignature(username, email);
         LibGit temp = LibGit::open(other.root);
         repo = std::move(temp.repo);
         isRepoValid = other.isRepoValid;
@@ -85,6 +85,7 @@ namespace copypasta {
         if (git_clone(&repo, url.c_str(), path.c_str(), &opts) < 0) {
             auto e = git_error_last();
             auto repo = LibGit();
+            LERROR(std::string("Unable to clone repository at " + url + " due to :") << ((e && e->message) ? e->message : "Unknown"));
             return repo;
             /*throw std::runtime_error(std::string("Unable to clone repository at " + url + " due to :") +
                 ((e && e->message) ? e->message : "Unknown"));
@@ -101,6 +102,7 @@ namespace copypasta {
         if (git_repository_open(&repo, path.c_str()) < 0) {
             const git_error* e = git_error_last();
             auto repo = LibGit();
+            LERROR(std::string("Unable to open git repository at " + path + " due to : ") << (e && e->message ? e->message : "Unknown"));
             return repo;
             /*throw std::runtime_error(std::string("Unable to open repository at " + path + " due to : ") +
                 (e && e->message ? e->message : "Unknown"));
@@ -133,7 +135,10 @@ namespace copypasta {
 
     bool LibGit::isPathIgnored(const std::string& path) {
         DEBUG_FULL("LibGit isPathIgnored");
-        if (!isRepoValid) return false;
+        if (!isRepoValid) {
+            DEBUG("Git Repo is not valid, isPathIgnored will not work");
+            return false;
+        }
         int ignored;
         if (git_ignore_path_is_ignored(&ignored, repo.get(), path.c_str()) < 0) {
             return false;
@@ -189,10 +194,9 @@ namespace copypasta {
     }
 
     void LibGit::addIgnoreRule(const std::string& rule) {
-        if (!isRepoValid) {
-            throw std::runtime_error("This is not a valid Git repo, unable to addIgnoreRule");
+        if (isRepoValid) {
+            git_ignore_add_rule(repo.get(), rule.c_str());
         }
-        git_ignore_add_rule(repo.get(), rule.c_str());
     }
 
     void LibGit::checkout(const std::string& blobId, git_checkout_options opts) {
