@@ -140,7 +140,11 @@ namespace copypasta {
             return false;
         }
         int ignored;
-        if (git_ignore_path_is_ignored(&ignored, repo.get(), path.c_str()) < 0) {
+        fs::path relPath = fs::relative(path, root);
+        if (git_ignore_path_is_ignored(&ignored, repo.get(), relPath.string().c_str()) < 0) {
+            const git_error* e = git_error_last();
+            LERROR(std::string("Unable to open or init repository at " + path + " due to : ") +
+                (e && e->message ? e->message : "Unknown"));
             return false;
         }
         return ignored == 1;
