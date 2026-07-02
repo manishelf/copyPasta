@@ -100,7 +100,7 @@ public:
 
 private:
 
-  std::shared_ptr<std::vector<fs::directory_entry>> DirWalker::getChildren() {
+  std::shared_ptr<std::vector<fs::directory_entry>> getChildren() {
     std::shared_ptr<std::vector<fs::directory_entry>> entries;
     if (useCache) {
       DEBUG("DirWalker walk with pool use cached path");
